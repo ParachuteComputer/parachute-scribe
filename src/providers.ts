@@ -1,0 +1,29 @@
+import { transcribe as parakeetMlx } from "./transcribe/parakeet-mlx.ts";
+import { transcribe as onnxAsr } from "./transcribe/onnx-asr.ts";
+import { transcribe as groq } from "./transcribe/groq.ts";
+import { transcribe as openai } from "./transcribe/openai.ts";
+import { cleanup as claude } from "./cleanup/claude.ts";
+import { cleanup as ollama } from "./cleanup/ollama.ts";
+
+export const transcribers: Record<string, (audio: File) => Promise<string>> = {
+  "parakeet-mlx": parakeetMlx,
+  "onnx-asr": onnxAsr,
+  groq,
+  openai,
+};
+
+export const cleaners: Record<string, (text: string) => Promise<string>> = {
+  claude,
+  ollama,
+  none: async (text) => text,
+};
+
+export function getProvider<T>(map: Record<string, T>, key: string, label: string): T {
+  const provider = map[key];
+  if (!provider) {
+    console.error(`Unknown ${label} provider: ${key}`);
+    console.error(`Available: ${Object.keys(map).join(", ")}`);
+    process.exit(1);
+  }
+  return provider;
+}

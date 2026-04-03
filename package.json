@@ -1,8 +1,14 @@
 {
   "name": "parachute-scribe",
-  "module": "index.ts",
+  "module": "src/server.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "scribe": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts serve"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
