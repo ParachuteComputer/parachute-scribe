@@ -1,6 +1,6 @@
 {
   "name": "parachute-scribe",
-  "module": "src/server.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "bin": {

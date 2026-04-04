@@ -13,6 +13,7 @@ export function startServer() {
   console.log(`  cleanup: ${CLEANUP}`);
 
   Bun.serve({
+    hostname: "0.0.0.0",
     port: PORT,
     async fetch(req) {
       const url = new URL(req.url);
@@ -23,6 +24,13 @@ export function startServer() {
 
       if (url.pathname === "/health") {
         return Response.json({ ok: true });
+      }
+
+      // Whisper-compatible models endpoint (used by clients for health checks)
+      if (url.pathname === "/v1/models") {
+        return Response.json({
+          data: [{ id: TRANSCRIBE, object: "model" }],
+        });
       }
 
       return new Response("Not found", { status: 404 });

@@ -4,6 +4,7 @@ import { transcribe as groq } from "./transcribe/groq.ts";
 import { transcribe as openai } from "./transcribe/openai.ts";
 import { cleanup as claude } from "./cleanup/claude.ts";
 import { cleanup as ollama } from "./cleanup/ollama.ts";
+import { openai as openaiCleanup, gemini, groqCleanup, custom } from "./cleanup/openai-compat.ts";
 
 export const transcribers: Record<string, (audio: File) => Promise<string>> = {
   "parakeet-mlx": parakeetMlx,
@@ -15,6 +16,10 @@ export const transcribers: Record<string, (audio: File) => Promise<string>> = {
 export const cleaners: Record<string, (text: string) => Promise<string>> = {
   claude,
   ollama,
+  openai: openaiCleanup,
+  gemini,
+  groq: groqCleanup,
+  custom,
   none: async (text) => text,
 };
 
