@@ -2,7 +2,8 @@
   "name": "parachute-scribe",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
+  "private": false,
+  "license": "AGPL-3.0",
   "bin": {
     "scribe": "src/cli.ts"
   },
