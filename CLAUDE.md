@@ -54,7 +54,7 @@ Use Bun for everything:
 - **Parachute Daily** (Flutter app) already has offline transcription via Sherpa-ONNX. This service adds a server-side option with higher quality + LLM cleanup.
 - **Parachute Vault** is the knowledge graph where transcribed notes land. Scribe doesn't know about the vault — it just returns text. The client (app or agent) stores it.
 - Domain: `parachute.computer`, this would be at `scribe.parachute.computer`
-- Sister repos: [parachute-vault](https://github.com/ParachuteComputer/parachute-vault), [parachute-daily](https://github.com/ParachuteComputer/parachute-daily)
+- Sister repos: [@openparachute/vault](https://github.com/ParachuteComputer/@openparachute/vault), [@openparachute/daily](https://github.com/ParachuteComputer/@openparachute/daily)
 
 ## Open questions
 
