@@ -1,8 +1,8 @@
-import { CLEANUP_PROMPT } from "./prompt.ts";
+import { buildCleanupPrompt } from "./prompt.ts";
 
-export async function cleanup(text: string): Promise<string> {
+export async function cleanup(text: string, properNouns?: string): Promise<string> {
   const url = process.env.OLLAMA_URL ?? "http://localhost:11434";
-  const model = process.env.OLLAMA_MODEL ?? "llama3.1";
+  const model = process.env.OLLAMA_MODEL ?? "gemma4:e4b";
 
   const res = await fetch(`${url}/api/chat`, {
     method: "POST",
@@ -11,7 +11,7 @@ export async function cleanup(text: string): Promise<string> {
       model,
       stream: false,
       messages: [
-        { role: "system", content: CLEANUP_PROMPT },
+        { role: "system", content: buildCleanupPrompt(properNouns) },
         { role: "user", content: text },
       ],
     }),
