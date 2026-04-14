@@ -1,0 +1,23 @@
+{
+  "cleanup": {
+    "provider": "ollama",
+    "default": true
+  },
+  "vault": {
+    "url": "http://localhost:1940",
+    "token": "pvt_read_only_token",
+    "cache_ttl_seconds": 300,
+    "contexts": [
+      {
+        "tag": "person",
+        "exclude_tag": "archived",
+        "include_metadata": ["summary", "aliases"]
+      },
+      {
+        "tag": "project",
+        "exclude_tag": "archived",
+        "include_metadata": ["summary", "aliases"]
+      }
+    ]
+  }
+}

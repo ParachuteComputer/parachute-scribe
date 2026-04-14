@@ -2,6 +2,8 @@
 
 import { transcribers, cleaners, getProvider } from "./providers.ts";
 import { startServer } from "./server.ts";
+import { loadConfig } from "./config.ts";
+import { fetchProperNouns } from "./vault.ts";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -27,11 +29,13 @@ Options:
   --transcribe <provider>             Transcription provider (default: parakeet-mlx)
   --cleanup <provider>                Cleanup provider (default: none)
   --no-cleanup                        Skip LLM cleanup even if configured
+  --config <path>                     Path to scribe.config.json
   --json                              Output JSON instead of plain text
 
 Environment:
   TRANSCRIBE_PROVIDER                 Default transcription provider
   CLEANUP_PROVIDER                    Default cleanup provider
+  SCRIBE_CONFIG                       Path to scribe.config.json (default: ./scribe.config.json)
   PORT                                Server port (default: 3200)
 
 Examples:
@@ -44,7 +48,7 @@ Examples:
 
 switch (command) {
   case "serve":
-    startServer();
+    await startServer();
     break;
 
   case "providers":
@@ -70,10 +74,18 @@ async function cmdTranscribe(filePath: string) {
     process.exit(1);
   }
 
-  const transcribeProvider = getFlag("--transcribe") ?? process.env.TRANSCRIBE_PROVIDER ?? "parakeet-mlx";
+  const config = await loadConfig(getFlag("--config"));
+
+  const transcribeProvider = getFlag("--transcribe")
+    ?? config.transcribe?.provider
+    ?? process.env.TRANSCRIBE_PROVIDER
+    ?? "parakeet-mlx";
   const cleanupProvider = hasFlag("--no-cleanup")
     ? "none"
-    : getFlag("--cleanup") ?? process.env.CLEANUP_PROVIDER ?? "none";
+    : getFlag("--cleanup")
+      ?? config.cleanup?.provider
+      ?? process.env.CLEANUP_PROVIDER
+      ?? "none";
   const outputJson = hasFlag("--json");
 
   const transcribe = getProvider(transcribers, transcribeProvider, "transcription");
@@ -86,7 +98,8 @@ async function cmdTranscribe(filePath: string) {
   let text = await transcribe(audioFile);
 
   if (cleanupProvider !== "none") {
-    text = await cleanup(text);
+    const properNouns = await fetchProperNouns(config);
+    text = await cleanup(text, properNouns);
   }
 
   if (outputJson) {

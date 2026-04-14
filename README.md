@@ -124,7 +124,7 @@ GEMINI_API_KEY=...
 
 # Ollama
 OLLAMA_URL=http://localhost:11434    # Default Ollama endpoint
-OLLAMA_MODEL=llama3.1               # Default cleanup model
+OLLAMA_MODEL=gemma4:e4b              # Default cleanup model
 
 # Custom OpenAI-compatible provider
 CUSTOM_CLEANUP_URL=...
@@ -134,6 +134,30 @@ CUSTOM_CLEANUP_MODEL=...
 # Server
 PORT=3200                            # HTTP server port
 ```
+
+## Vault-aware cleanup (optional)
+
+Point scribe at a [Parachute Vault](https://github.com/ParachuteComputer/parachute-vault) and the cleanup pass will learn the proper nouns you care about — correcting mishearings ("learn by build" → "Learn Vibe Build") and wrapping matches in `[[wikilinks]]` so transcribed memos land pre-linked in your graph.
+
+Copy `scribe.config.example.json` to `scribe.config.json` and edit:
+
+```json
+{
+  "cleanup": { "provider": "ollama", "default": true },
+  "vault": {
+    "url": "http://localhost:1940",
+    "token": "pvt_read_only_token",
+    "contexts": [
+      { "tag": "person",  "exclude_tag": "archived", "include_metadata": ["summary", "aliases"] },
+      { "tag": "project", "exclude_tag": "archived", "include_metadata": ["summary", "aliases"] }
+    ]
+  }
+}
+```
+
+Scribe fetches the proper-noun list once per `cache_ttl_seconds` (default 300) and injects it into the cleanup prompt. If the vault is unreachable, cleanup still runs — just without the context.
+
+Set `SCRIBE_CONFIG=/path/to/scribe.config.json` (or pass `--config <path>` on the CLI) to point at a non-default location.
 
 ## How vault uses scribe
 

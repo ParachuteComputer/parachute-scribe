@@ -1,11 +1,16 @@
 export { transcribers, cleaners, getProvider } from "./providers.ts";
-export { CLEANUP_PROMPT } from "./cleanup/prompt.ts";
+export { CLEANUP_PROMPT, buildCleanupPrompt } from "./cleanup/prompt.ts";
+export { loadConfig, type ScribeConfig, type VaultContext } from "./config.ts";
+export { fetchProperNouns, clearVaultCache } from "./vault.ts";
 
 import { transcribers, cleaners } from "./providers.ts";
+import { loadConfig, type ScribeConfig } from "./config.ts";
+import { fetchProperNouns } from "./vault.ts";
 
 export type TranscribeOptions = {
   provider?: string;
   cleanup?: string;
+  config?: ScribeConfig;
 };
 
 /**
@@ -16,8 +21,16 @@ export async function transcribe(
   audio: File,
   opts: TranscribeOptions = {},
 ): Promise<string> {
-  const transcribeProvider = opts.provider ?? process.env.TRANSCRIBE_PROVIDER ?? "parakeet-mlx";
-  const cleanupProvider = opts.cleanup ?? process.env.CLEANUP_PROVIDER ?? "none";
+  const config = opts.config ?? await loadConfig();
+
+  const transcribeProvider = opts.provider
+    ?? config.transcribe?.provider
+    ?? process.env.TRANSCRIBE_PROVIDER
+    ?? "parakeet-mlx";
+  const cleanupProvider = opts.cleanup
+    ?? config.cleanup?.provider
+    ?? process.env.CLEANUP_PROVIDER
+    ?? "none";
 
   const transcriber = transcribers[transcribeProvider];
   if (!transcriber) {
@@ -32,7 +45,8 @@ export async function transcribe(
   let text = await transcriber(audio);
 
   if (cleanupProvider !== "none") {
-    text = await cleaner(text);
+    const properNouns = await fetchProperNouns(config);
+    text = await cleaner(text, properNouns);
   }
 
   return text;
