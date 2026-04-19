@@ -1,6 +1,7 @@
 import { transcribers, cleaners, getProvider } from "./providers.ts";
 import { loadConfig } from "./config.ts";
 import { fetchProperNouns } from "./vault.ts";
+import { preflight, withCors } from "./cors.ts";
 
 export async function startServer() {
   const config = await loadConfig();
@@ -24,25 +25,30 @@ export async function startServer() {
     hostname: "0.0.0.0",
     port: PORT,
     async fetch(req) {
-      const url = new URL(req.url);
-
-      if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
-        return handleTranscription(req);
-      }
-
-      if (url.pathname === "/health") {
-        return Response.json({ ok: true });
-      }
-
-      if (url.pathname === "/v1/models") {
-        return Response.json({
-          data: [{ id: TRANSCRIBE, object: "model" }],
-        });
-      }
-
-      return new Response("Not found", { status: 404 });
+      if (req.method === "OPTIONS") return preflight();
+      return withCors(await route(req));
     },
   });
+
+  async function route(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+
+    if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
+      return handleTranscription(req);
+    }
+
+    if (url.pathname === "/health") {
+      return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/v1/models") {
+      return Response.json({
+        data: [{ id: TRANSCRIBE, object: "model" }],
+      });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
 
   async function handleTranscription(req: Request): Promise<Response> {
     const form = await req.formData();
