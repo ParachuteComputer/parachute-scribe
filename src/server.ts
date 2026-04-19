@@ -2,6 +2,8 @@ import { transcribers, cleaners, getProvider } from "./providers.ts";
 import { loadConfig } from "./config.ts";
 import { fetchProperNouns } from "./vault.ts";
 import { preflight, withCors } from "./cors.ts";
+import { upsertService } from "./services-manifest.ts";
+import pkg from "../package.json" with { type: "json" };
 
 export async function startServer() {
   const config = await loadConfig();
@@ -29,6 +31,20 @@ export async function startServer() {
       return withCors(await route(req));
     },
   });
+
+  try {
+    upsertService({
+      name: "parachute-scribe",
+      port: PORT,
+      paths: ["/"],
+      health: "/health",
+      version: pkg.version,
+    });
+  } catch (err) {
+    console.warn(
+      `scribe: skipped services manifest update: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
