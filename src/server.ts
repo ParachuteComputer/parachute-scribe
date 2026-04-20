@@ -12,6 +12,11 @@ import {
   handleParachuteIcon,
   handleParachuteInfo,
 } from "./parachute-info.ts";
+import {
+  type ResolvedConfig,
+  handleConfig,
+  handleConfigSchema,
+} from "./config-schema.ts";
 import pkg from "../package.json" with { type: "json" };
 
 export async function startServer() {
@@ -24,6 +29,18 @@ export async function startServer() {
 
   const transcribe = getProvider(transcribers, TRANSCRIBE, "transcription");
   const cleanup = getProvider(cleaners, CLEANUP, "cleanup");
+
+  const resolvedConfig: ResolvedConfig = {
+    transcribeProvider: TRANSCRIBE,
+    cleanupProvider: CLEANUP,
+    cleanupDefault: CLEANUP_DEFAULT,
+    port: PORT,
+    vault: {
+      configured: Boolean(config.vault?.url),
+      url: config.vault?.url ?? null,
+      cacheTtlSeconds: config.vault?.cache_ttl_seconds ?? null,
+    },
+  };
 
   console.log(`scribe listening on :${PORT}`);
   console.log(`  transcribe: ${TRANSCRIBE}`);
@@ -60,11 +77,15 @@ export async function startServer() {
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
-    if (url.pathname === "/.parachute/info" || url.pathname === "/.parachute/icon.svg") {
+    if (url.pathname.startsWith("/.parachute/")) {
       if (req.method !== "GET") {
         return Response.json({ error: "Method not allowed" }, { status: 405 });
       }
-      return url.pathname === "/.parachute/info" ? handleParachuteInfo() : handleParachuteIcon();
+      if (url.pathname === "/.parachute/info") return handleParachuteInfo();
+      if (url.pathname === "/.parachute/icon.svg") return handleParachuteIcon();
+      if (url.pathname === "/.parachute/config/schema") return handleConfigSchema();
+      if (url.pathname === "/.parachute/config") return handleConfig(resolvedConfig);
+      return new Response("Not found", { status: 404 });
     }
 
     if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
