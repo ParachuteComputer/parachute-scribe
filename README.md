@@ -79,9 +79,18 @@ Response: `{ "text": "..." }`
 Other endpoints:
 
 ```
-GET  /v1/models    # List available transcription providers
-GET  /health       # Health check
+GET  /v1/models                    # List available transcription providers
+GET  /health                       # Health check
+GET  /.parachute/info              # Module identity (name, version, icon, kind)
+GET  /.parachute/icon.svg          # Inline SVG icon
+GET  /.parachute/config/schema     # Draft-07 JSON Schema for scribe's config
+GET  /.parachute/config            # Current resolved runtime config values
 ```
+
+Scribe reserves two scopes for future hub-issued-token enforcement:
+`scribe:transcribe` (request-time, per-call) and `scribe:admin` (config writes).
+Neither is enforced yet — scribe is loopback-trusted through launch — but the
+schema declares them under `x-scopes` for forward compat.
 
 ## Transcription providers
 
