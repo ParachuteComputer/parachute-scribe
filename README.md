@@ -40,7 +40,7 @@ parachute-scribe <file> --cleanup claude  # Transcribe + LLM cleanup
 parachute-scribe <file> --transcribe groq # Use a specific transcription provider
 parachute-scribe <file> --no-cleanup      # Skip cleanup even if configured
 parachute-scribe <file> --json            # Output JSON: {"text": "..."}
-parachute-scribe serve                    # Start HTTP server (port 3200)
+parachute-scribe serve                    # Start HTTP server (port 1943)
 parachute-scribe providers                # List available providers
 ```
 
@@ -132,7 +132,7 @@ CUSTOM_CLEANUP_API_KEY=...
 CUSTOM_CLEANUP_MODEL=...
 
 # Server
-PORT=3200                            # HTTP server port
+SCRIBE_PORT=1943                     # HTTP server port (PORT also honored for back-compat)
 ```
 
 ## Vault-aware cleanup (optional)

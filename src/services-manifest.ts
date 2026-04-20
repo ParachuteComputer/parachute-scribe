@@ -8,6 +8,8 @@ export interface ServiceEntry {
   paths: string[];
   health: string;
   version: string;
+  displayName?: string;
+  tagline?: string;
 }
 
 interface ServicesManifest {

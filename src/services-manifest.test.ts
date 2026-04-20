@@ -6,10 +6,12 @@ import { resolveManifestPath, upsertService, type ServiceEntry } from "./service
 
 const SCRIBE_ENTRY: ServiceEntry = {
   name: "parachute-scribe",
-  port: 3200,
-  paths: ["/"],
+  port: 1943,
+  paths: ["/scribe"],
   health: "/health",
   version: "0.1.0",
+  displayName: "Scribe",
+  tagline: "Audio transcription (Whisper-compatible API + LLM cleanup)",
 };
 
 describe("services-manifest", () => {
@@ -34,11 +36,21 @@ describe("services-manifest", () => {
 
   test("updates existing entry by name (idempotent second start)", () => {
     upsertService(SCRIBE_ENTRY, path);
-    upsertService({ ...SCRIBE_ENTRY, port: 3300, version: "0.2.0" }, path);
+    upsertService({ ...SCRIBE_ENTRY, port: 1944, version: "0.2.0" }, path);
     const got = JSON.parse(readFileSync(path, "utf8"));
     expect(got.services).toHaveLength(1);
-    expect(got.services[0].port).toBe(3300);
+    expect(got.services[0].port).toBe(1944);
     expect(got.services[0].version).toBe("0.2.0");
+  });
+
+  test("persists paths, displayName, and tagline fields", () => {
+    upsertService(SCRIBE_ENTRY, path);
+    const got = JSON.parse(readFileSync(path, "utf8"));
+    expect(got.services[0].paths).toEqual(["/scribe"]);
+    expect(got.services[0].displayName).toBe("Scribe");
+    expect(got.services[0].tagline).toBe(
+      "Audio transcription (Whisper-compatible API + LLM cleanup)",
+    );
   });
 
   test("preserves entries owned by other services", () => {
@@ -56,7 +68,7 @@ describe("services-manifest", () => {
     const vault = got.services.find((s: ServiceEntry) => s.name === "parachute-vault");
     const scribe = got.services.find((s: ServiceEntry) => s.name === "parachute-scribe");
     expect(vault?.port).toBe(1940);
-    expect(scribe?.port).toBe(3200);
+    expect(scribe?.port).toBe(1943);
   });
 
   test("throws on malformed manifest rather than clobbering it", () => {

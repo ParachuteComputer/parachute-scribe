@@ -3,6 +3,15 @@ import { loadConfig } from "./config.ts";
 import { fetchProperNouns } from "./vault.ts";
 import { preflight, withCors } from "./cors.ts";
 import { upsertService } from "./services-manifest.ts";
+import {
+  DEFAULT_PORT,
+  DISPLAY_NAME,
+  MOUNT_PATH,
+  SERVICE_NAME,
+  TAGLINE,
+  handleParachuteIcon,
+  handleParachuteInfo,
+} from "./parachute-info.ts";
 import pkg from "../package.json" with { type: "json" };
 
 export async function startServer() {
@@ -10,7 +19,7 @@ export async function startServer() {
 
   const TRANSCRIBE = config.transcribe?.provider ?? process.env.TRANSCRIBE_PROVIDER ?? "parakeet-mlx";
   const CLEANUP = config.cleanup?.provider ?? process.env.CLEANUP_PROVIDER ?? "none";
-  const PORT = Number(process.env.PORT ?? 3200);
+  const PORT = Number(process.env.SCRIBE_PORT ?? process.env.PORT ?? DEFAULT_PORT);
   const CLEANUP_DEFAULT = config.cleanup?.default ?? true;
 
   const transcribe = getProvider(transcribers, TRANSCRIBE, "transcription");
@@ -34,11 +43,13 @@ export async function startServer() {
 
   try {
     upsertService({
-      name: "parachute-scribe",
+      name: SERVICE_NAME,
       port: PORT,
-      paths: ["/"],
+      paths: [MOUNT_PATH],
       health: "/health",
       version: pkg.version,
+      displayName: DISPLAY_NAME,
+      tagline: TAGLINE,
     });
   } catch (err) {
     console.warn(
@@ -48,6 +59,13 @@ export async function startServer() {
 
   async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    if (url.pathname === "/.parachute/info" || url.pathname === "/.parachute/icon.svg") {
+      if (req.method !== "GET") {
+        return Response.json({ error: "Method not allowed" }, { status: 405 });
+      }
+      return url.pathname === "/.parachute/info" ? handleParachuteInfo() : handleParachuteIcon();
+    }
 
     if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
       return handleTranscription(req);
