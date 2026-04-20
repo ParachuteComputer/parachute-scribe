@@ -37,7 +37,7 @@ Environment:
   CLEANUP_PROVIDER                    Default cleanup provider
   SCRIBE_CONFIG                       Path to config.json (default: ~/.parachute/scribe/config.json)
   PARACHUTE_HOME                      Override ~/.parachute base (e.g. Docker: /app/.parachute)
-  PORT                                Server port (default: 3200)
+  SCRIBE_PORT                         Server port (default: 1943; PORT also honored)
 
 Examples:
   parachute-scribe recording.wav
