@@ -18,12 +18,12 @@ function hasFlag(flag: string): boolean {
 }
 
 function usage() {
-  console.log(`scribe — audio transcription + LLM cleanup
+  console.log(`parachute-scribe — audio transcription + LLM cleanup
 
 Usage:
-  scribe <file>                       Transcribe an audio file
-  scribe serve                        Start the HTTP server
-  scribe providers                    List available providers
+  parachute-scribe <file>             Transcribe an audio file
+  parachute-scribe serve              Start the HTTP server
+  parachute-scribe providers          List available providers
 
 Options:
   --transcribe <provider>             Transcription provider (default: parakeet-mlx)
@@ -39,10 +39,10 @@ Environment:
   PORT                                Server port (default: 3200)
 
 Examples:
-  scribe recording.wav
-  scribe meeting.m4a --cleanup claude
-  scribe memo.mp3 --transcribe groq --cleanup ollama
-  scribe serve
+  parachute-scribe recording.wav
+  parachute-scribe meeting.m4a --cleanup claude
+  parachute-scribe memo.mp3 --transcribe groq --cleanup ollama
+  parachute-scribe serve
 `);
 }
 
