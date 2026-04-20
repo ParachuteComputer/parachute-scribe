@@ -35,13 +35,13 @@ Audio (wav/mp3/m4a) --> Transcription engine --> Raw text --> LLM cleanup (optio
 ## CLI
 
 ```bash
-scribe <file>                             # Transcribe a file
-scribe <file> --cleanup claude            # Transcribe + LLM cleanup
-scribe <file> --transcribe groq           # Use a specific transcription provider
-scribe <file> --no-cleanup                # Skip cleanup even if configured
-scribe <file> --json                      # Output JSON: {"text": "..."}
-scribe serve                              # Start HTTP server (port 3200)
-scribe providers                          # List available providers
+parachute-scribe <file>                   # Transcribe a file
+parachute-scribe <file> --cleanup claude  # Transcribe + LLM cleanup
+parachute-scribe <file> --transcribe groq # Use a specific transcription provider
+parachute-scribe <file> --no-cleanup      # Skip cleanup even if configured
+parachute-scribe <file> --json            # Output JSON: {"text": "..."}
+parachute-scribe serve                    # Start HTTP server (port 3200)
+parachute-scribe providers                # List available providers
 ```
 
 ## Library

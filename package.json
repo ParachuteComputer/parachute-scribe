@@ -7,7 +7,7 @@
   "private": false,
   "license": "AGPL-3.0",
   "bin": {
-    "scribe": "src/cli.ts"
+    "parachute-scribe": "src/cli.ts"
   },
   "scripts": {
     "start": "bun run src/cli.ts serve"
