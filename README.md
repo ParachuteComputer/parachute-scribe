@@ -139,7 +139,7 @@ PORT=3200                            # HTTP server port
 
 Point scribe at a [Parachute Vault](https://github.com/ParachuteComputer/parachute-vault) and the cleanup pass will learn the proper nouns you care about — correcting mishearings ("learn by build" → "Learn Vibe Build") and wrapping matches in `[[wikilinks]]` so transcribed memos land pre-linked in your graph.
 
-Copy `scribe.config.example.json` to `scribe.config.json` and edit:
+Copy `scribe.config.example.json` to `~/.parachute/scribe/config.json` (or `$PARACHUTE_HOME/scribe/config.json`) and edit:
 
 ```json
 {
@@ -157,7 +157,7 @@ Copy `scribe.config.example.json` to `scribe.config.json` and edit:
 
 Scribe fetches the proper-noun list once per `cache_ttl_seconds` (default 300) and injects it into the cleanup prompt. If the vault is unreachable, cleanup still runs — just without the context.
 
-Set `SCRIBE_CONFIG=/path/to/scribe.config.json` (or pass `--config <path>` on the CLI) to point at a non-default location.
+Default config path is `${PARACHUTE_HOME:-~/.parachute}/scribe/config.json`. Set `SCRIBE_CONFIG=/path/to/config.json` (or pass `--config <path>` on the CLI) to point somewhere else. An older `~/.parachute/scribe.config.json` is auto-migrated to the new path on first run.
 
 ## How vault uses scribe
 
