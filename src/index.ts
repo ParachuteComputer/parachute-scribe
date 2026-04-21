@@ -1,7 +1,6 @@
 export { transcribers, cleaners, getProvider } from "./providers.ts";
 export { CLEANUP_PROMPT, buildCleanupPrompt } from "./cleanup/prompt.ts";
-export { DEFAULT_VAULT_MODE, loadConfig, type ScribeConfig, type VaultContext, type VaultMode } from "./config.ts";
-export { fetchProperNouns, clearVaultCache } from "./vault.ts";
+export { loadConfig, type ScribeConfig } from "./config.ts";
 export {
   buildProperNounsBlockFromEntries,
   parseContextPayload,
@@ -10,8 +9,7 @@ export {
 } from "./context.ts";
 
 import { transcribers, cleaners } from "./providers.ts";
-import { DEFAULT_VAULT_MODE, loadConfig, type ScribeConfig } from "./config.ts";
-import { fetchProperNouns } from "./vault.ts";
+import { loadConfig, type ScribeConfig } from "./config.ts";
 import { buildProperNounsBlockFromEntries, parseContextPayload, type ContextPayload } from "./context.ts";
 
 export type TranscribeOptions = {
@@ -19,10 +17,9 @@ export type TranscribeOptions = {
   cleanup?: string;
   config?: ScribeConfig;
   /**
-   * Optional pre-fetched context block. When supplied, scribe uses it directly
-   * and does NOT call the vault backchannel — the caller has already provided
-   * everything cleanup needs. Accepts the same shape vault's transcription-worker
-   * sends as the `context` multipart part.
+   * Optional pre-fetched context block. When supplied, scribe uses it for the
+   * cleanup prompt. Accepts the same shape callers send as the `context`
+   * multipart part on POST /v1/audio/transcriptions.
    */
   context?: ContextPayload | string;
 };
@@ -62,7 +59,9 @@ export async function transcribe(
 
   if (cleanupProvider !== "none") {
     try {
-      const properNouns = await resolveProperNouns(config, contextPayload);
+      const properNouns = contextPayload
+        ? buildProperNounsBlockFromEntries(contextPayload)
+        : "";
       text = await cleaner(text, properNouns, {
         systemPrompt: config.cleanup?.system_prompt,
         contextTemplate: config.cleanup?.context_template,
@@ -74,16 +73,6 @@ export async function transcribe(
   }
 
   return text;
-}
-
-async function resolveProperNouns(
-  config: ScribeConfig,
-  contextPayload: ContextPayload | null,
-): Promise<string> {
-  if (contextPayload) return buildProperNounsBlockFromEntries(contextPayload);
-  const mode = config.vault?.mode ?? DEFAULT_VAULT_MODE;
-  if (mode === "off") return "";
-  return fetchProperNouns(config);
 }
 
 /**

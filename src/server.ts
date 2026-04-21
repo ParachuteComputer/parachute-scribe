@@ -1,6 +1,5 @@
 import { cleaners, getProvider, transcribers, type Cleaner } from "./providers.ts";
-import { DEFAULT_VAULT_MODE, loadConfig, type ScribeConfig } from "./config.ts";
-import { fetchProperNouns } from "./vault.ts";
+import { loadConfig, type ScribeConfig } from "./config.ts";
 import { buildProperNounsBlockFromEntries, parseContextPayload } from "./context.ts";
 import { preflight, withCors } from "./cors.ts";
 import { upsertService } from "./services-manifest.ts";
@@ -91,7 +90,7 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
     const raw = contextPart instanceof Blob ? await contextPart.text() : String(contextPart);
     contextPayload = parseContextPayload(raw);
     if (!contextPayload) {
-      console.warn("[scribe] malformed 'context' part in transcription request — ignoring, will fall through to vault");
+      console.warn("[scribe] malformed 'context' part in transcription request — ignoring, cleanup will run without proper nouns");
     }
   }
 
@@ -106,7 +105,9 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
 
   if (doCleanup) {
     try {
-      const properNouns = await resolveProperNouns(deps.scribeConfig, contextPayload);
+      const properNouns = contextPayload
+        ? buildProperNounsBlockFromEntries(contextPayload)
+        : "";
       text = await deps.cleanup(text, properNouns, {
         systemPrompt: deps.scribeConfig.cleanup?.system_prompt,
         contextTemplate: deps.scribeConfig.cleanup?.context_template,
@@ -118,16 +119,6 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
   }
 
   return Response.json({ text });
-}
-
-async function resolveProperNouns(
-  config: ScribeConfig,
-  contextPayload: ReturnType<typeof parseContextPayload>,
-): Promise<string> {
-  if (contextPayload) return buildProperNounsBlockFromEntries(contextPayload);
-  const mode = config.vault?.mode ?? DEFAULT_VAULT_MODE;
-  if (mode === "off") return "";
-  return fetchProperNouns(config);
 }
 
 export async function startServer() {
@@ -148,21 +139,12 @@ export async function startServer() {
     cleanupSystemPrompt: config.cleanup?.system_prompt ?? null,
     cleanupContextTemplate: config.cleanup?.context_template ?? null,
     port: PORT,
-    vault: {
-      configured: Boolean(config.vault?.url),
-      url: config.vault?.url ?? null,
-      cacheTtlSeconds: config.vault?.cache_ttl_seconds ?? null,
-      mode: config.vault?.mode ?? DEFAULT_VAULT_MODE,
-    },
   };
 
   console.log(`scribe listening on :${PORT}`);
   console.log(`  transcribe: ${TRANSCRIBE}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
   console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN)" : "open"}`);
-  if (config.vault?.url && config.vault.contexts?.length) {
-    console.log(`  vault:      ${config.vault.url} (${config.vault.contexts.length} contexts)`);
-  }
 
   const handler = createFetchHandler({
     transcribe,

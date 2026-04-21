@@ -43,10 +43,10 @@ describe("claude-code cleanup provider", () => {
     const { spawn, calls } = recordingSpawn({ stdout: "ok" });
     const cleaner = makeCleaner(spawn);
 
-    await cleaner("some words", "## Proper nouns in this vault\n\nPeople:\n- [[People/Sam]]");
+    await cleaner("some words", "## Known names in this context\n\n- Sam — friend");
 
-    expect(calls[0]!.stdin).toContain("## Proper nouns in this vault");
-    expect(calls[0]!.stdin).toContain("[[People/Sam]]");
+    expect(calls[0]!.stdin).toContain("## Known names in this context");
+    expect(calls[0]!.stdin).toContain("Sam — friend");
   });
 
   test("throws actionable message when claude is not on PATH (ENOENT)", async () => {

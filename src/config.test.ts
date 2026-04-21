@@ -98,4 +98,36 @@ describe("config loading + legacy migration", () => {
     const cfg = await loadConfig();
     expect(cfg).toEqual({});
   });
+
+  test("logs a warning + ignores stale `vault` block (removed in 0.3.0)", async () => {
+    mkdirSync(join(home, "scribe"), { recursive: true });
+    writeFileSync(
+      join(home, "scribe", "config.json"),
+      JSON.stringify({
+        cleanup: { provider: "claude" },
+        vault: {
+          url: "http://localhost:1940",
+          contexts: [{ tag: "person" }],
+          mode: "fallback",
+        },
+      }),
+    );
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+
+    let cfg;
+    try {
+      cfg = await loadConfig();
+    } finally {
+      console.warn = origWarn;
+    }
+
+    expect(cfg.cleanup?.provider).toBe("claude");
+    expect((cfg as Record<string, unknown>).vault).toBeDefined(); // ignored by typesystem; kept as-is from JSON
+    expect(warnings.some((w) => w.includes("\"vault\" block") && w.includes("ignored"))).toBe(true);
+  });
 });
