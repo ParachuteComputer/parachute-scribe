@@ -45,8 +45,13 @@ export async function transcribe(
   let text = await transcriber(audio);
 
   if (cleanupProvider !== "none") {
-    const properNouns = await fetchProperNouns(config);
-    text = await cleaner(text, properNouns);
+    try {
+      const properNouns = await fetchProperNouns(config);
+      text = await cleaner(text, properNouns);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Cleanup failed (provider=${cleanupProvider}): ${message} — returning raw transcription`);
+    }
   }
 
   return text;

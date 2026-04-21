@@ -84,18 +84,26 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
         ? false
         : cleanupDefault);
 
+  let text: string;
   try {
-    let text = await deps.transcribe(file);
-    if (doCleanup) {
-      const properNouns = await fetchProperNouns(deps.scribeConfig);
-      text = await deps.cleanup(text, properNouns);
-    }
-    return Response.json({ text });
+    text = await deps.transcribe(file);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "transcription failed";
     console.error("Transcription error:", message);
     return Response.json({ error: message }, { status: 500 });
   }
+
+  if (doCleanup) {
+    try {
+      const properNouns = await fetchProperNouns(deps.scribeConfig);
+      text = await deps.cleanup(text, properNouns);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Cleanup failed (provider=${cleanupProvider}): ${message} — returning raw transcription`);
+    }
+  }
+
+  return Response.json({ text });
 }
 
 export async function startServer() {

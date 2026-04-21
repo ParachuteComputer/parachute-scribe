@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createFetchHandler, type ServerDeps } from "./server.ts";
 import type { ResolvedConfig } from "./config-schema.ts";
+import type { Cleaner } from "./providers.ts";
 
 const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
@@ -10,14 +11,24 @@ const RESOLVED: ResolvedConfig = {
   vault: { configured: false, url: null, cacheTtlSeconds: null },
 };
 
-function buildHandler(): (req: Request) => Promise<Response> {
+function buildHandler(overrides: Partial<ServerDeps> = {}): (req: Request) => Promise<Response> {
   const deps: ServerDeps = {
     transcribe: async () => "stub text",
     cleanup: async (text) => text,
     resolvedConfig: RESOLVED,
     scribeConfig: {},
+    ...overrides,
   };
   return createFetchHandler(deps);
+}
+
+function transcribeReq(): Request {
+  const form = new FormData();
+  form.set("file", new File(["fake audio"], "test.wav"));
+  return new Request("http://localhost/v1/audio/transcriptions", {
+    method: "POST",
+    body: form,
+  });
 }
 
 describe("createFetchHandler — auth gate", () => {
@@ -95,14 +106,7 @@ describe("createFetchHandler — auth gate", () => {
     });
 
     test("/v1/audio/transcriptions returns 401 without a token", async () => {
-      const form = new FormData();
-      form.set("file", new File(["fake audio"], "test.wav"));
-      const res = await buildHandler()(
-        new Request("http://localhost/v1/audio/transcriptions", {
-          method: "POST",
-          body: form,
-        }),
-      );
+      const res = await buildHandler()(transcribeReq());
       expect(res.status).toBe(401);
     });
 
@@ -119,5 +123,71 @@ describe("createFetchHandler — auth gate", () => {
       expect(res.status).toBe(401);
       expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
     });
+  });
+});
+
+describe("createFetchHandler — cleanup failure behavior", () => {
+  const CLEANUP_RESOLVED: ResolvedConfig = {
+    ...RESOLVED,
+    cleanupProvider: "claude",
+    cleanupDefault: true,
+  };
+
+  let originalToken: string | undefined;
+  let originalError: typeof console.error;
+  let errors: string[];
+
+  beforeEach(() => {
+    originalToken = process.env.SCRIBE_AUTH_TOKEN;
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    errors = [];
+    originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map((a) => String(a)).join(" "));
+    };
+  });
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env.SCRIBE_AUTH_TOKEN;
+    else process.env.SCRIBE_AUTH_TOKEN = originalToken;
+    console.error = originalError;
+  });
+
+  test("cleanup throw → 200 with raw transcription, not 500", async () => {
+    const throwingCleanup: Cleaner = async () => {
+      throw new Error("upstream LLM unreachable");
+    };
+    const handler = buildHandler({
+      transcribe: async () => "raw transcribed words",
+      cleanup: throwingCleanup,
+      resolvedConfig: CLEANUP_RESOLVED,
+    });
+
+    const res = await handler(transcribeReq());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ text: "raw transcribed words" });
+    expect(errors.some((e) => e.includes("Cleanup failed") && e.includes("upstream LLM unreachable"))).toBe(true);
+  });
+
+  test("transcription throw → still 500 (cleanup fallback only covers cleanup)", async () => {
+    const handler = buildHandler({
+      transcribe: async () => {
+        throw new Error("audio decode failed");
+      },
+      resolvedConfig: CLEANUP_RESOLVED,
+    });
+    const res = await handler(transcribeReq());
+    expect(res.status).toBe(500);
+  });
+
+  test("cleanup success → 200 with cleaned text", async () => {
+    const handler = buildHandler({
+      transcribe: async () => "raw",
+      cleanup: async (text) => `cleaned(${text})`,
+      resolvedConfig: CLEANUP_RESOLVED,
+    });
+    const res = await handler(transcribeReq());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ text: "cleaned(raw)" });
   });
 });
