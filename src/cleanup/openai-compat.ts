@@ -1,4 +1,4 @@
-import { buildCleanupPrompt } from "./prompt.ts";
+import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
 
 type ProviderConfig = {
   baseUrl: string;
@@ -7,7 +7,11 @@ type ProviderConfig = {
 };
 
 function makeCleanup(config: ProviderConfig) {
-  return async function cleanup(text: string, properNouns?: string): Promise<string> {
+  return async function cleanup(
+    text: string,
+    properNouns?: string,
+    opts?: CleanupPromptOpts,
+  ): Promise<string> {
     const apiKey = config.apiKey;
     if (!apiKey) throw new Error(`API key not set for cleanup provider`);
 
@@ -22,7 +26,7 @@ function makeCleanup(config: ProviderConfig) {
       body: JSON.stringify({
         model,
         messages: [
-          { role: "system", content: buildCleanupPrompt(properNouns) },
+          { role: "system", content: buildCleanupPrompt(properNouns, opts) },
           { role: "user", content: text },
         ],
       }),

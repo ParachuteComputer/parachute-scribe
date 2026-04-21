@@ -1,6 +1,10 @@
-import { buildCleanupPrompt } from "./prompt.ts";
+import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
 
-export async function cleanup(text: string, properNouns?: string): Promise<string> {
+export async function cleanup(
+  text: string,
+  properNouns?: string,
+  opts?: CleanupPromptOpts,
+): Promise<string> {
   const url = process.env.OLLAMA_URL ?? "http://localhost:11434";
   const model = process.env.OLLAMA_MODEL ?? "gemma4:e4b";
 
@@ -11,7 +15,7 @@ export async function cleanup(text: string, properNouns?: string): Promise<strin
       model,
       stream: false,
       messages: [
-        { role: "system", content: buildCleanupPrompt(properNouns) },
+        { role: "system", content: buildCleanupPrompt(properNouns, opts) },
         { role: "user", content: text },
       ],
     }),

@@ -63,7 +63,10 @@ export async function transcribe(
   if (cleanupProvider !== "none") {
     try {
       const properNouns = await resolveProperNouns(config, contextPayload);
-      text = await cleaner(text, properNouns);
+      text = await cleaner(text, properNouns, {
+        systemPrompt: config.cleanup?.system_prompt,
+        contextTemplate: config.cleanup?.context_template,
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Cleanup failed (provider=${cleanupProvider}): ${message} — returning raw transcription`);

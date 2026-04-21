@@ -9,6 +9,8 @@ const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
   cleanupProvider: "none",
   cleanupDefault: false,
+  cleanupSystemPrompt: null,
+  cleanupContextTemplate: null,
   port: 1943,
   vault: { configured: false, url: null, cacheTtlSeconds: null, mode: "fallback" },
 };
@@ -191,6 +193,28 @@ describe("createFetchHandler — cleanup failure behavior", () => {
     const res = await handler(transcribeReq());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ text: "cleaned(raw)" });
+  });
+
+  test("threads cleanup.system_prompt + context_template from config into cleaner opts", async () => {
+    let seenOpts: { systemPrompt?: string; contextTemplate?: string } | undefined;
+    const handler = buildHandler({
+      transcribe: async () => "raw",
+      cleanup: async (text, _nouns, opts) => {
+        seenOpts = opts;
+        return `cleaned(${text})`;
+      },
+      resolvedConfig: CLEANUP_RESOLVED,
+      scribeConfig: {
+        cleanup: {
+          system_prompt: "OVERRIDE PROMPT",
+          context_template: "\n\nCONTEXT: {{proper_nouns}}",
+        },
+      },
+    });
+    const res = await handler(transcribeReq());
+    expect(res.status).toBe(200);
+    expect(seenOpts?.systemPrompt).toBe("OVERRIDE PROMPT");
+    expect(seenOpts?.contextTemplate).toBe("\n\nCONTEXT: {{proper_nouns}}");
   });
 });
 

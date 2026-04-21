@@ -107,7 +107,10 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
   if (doCleanup) {
     try {
       const properNouns = await resolveProperNouns(deps.scribeConfig, contextPayload);
-      text = await deps.cleanup(text, properNouns);
+      text = await deps.cleanup(text, properNouns, {
+        systemPrompt: deps.scribeConfig.cleanup?.system_prompt,
+        contextTemplate: deps.scribeConfig.cleanup?.context_template,
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Cleanup failed (provider=${cleanupProvider}): ${message} — returning raw transcription`);
@@ -142,6 +145,8 @@ export async function startServer() {
     transcribeProvider: TRANSCRIBE,
     cleanupProvider: CLEANUP,
     cleanupDefault: CLEANUP_DEFAULT,
+    cleanupSystemPrompt: config.cleanup?.system_prompt ?? null,
+    cleanupContextTemplate: config.cleanup?.context_template ?? null,
     port: PORT,
     vault: {
       configured: Boolean(config.vault?.url),

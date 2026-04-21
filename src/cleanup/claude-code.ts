@@ -1,4 +1,4 @@
-import { buildCleanupPrompt } from "./prompt.ts";
+import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
 
 export type SpawnResult = { stdout: string; stderr: string; exitCode: number | null };
 
@@ -37,8 +37,12 @@ const defaultSpawn: SpawnFn = async ({ cmd, stdin, timeoutMs }) => {
 };
 
 export function makeCleaner(spawnFn: SpawnFn = defaultSpawn) {
-  return async (text: string, properNouns?: string): Promise<string> => {
-    const prompt = buildCleanupPrompt(properNouns);
+  return async (
+    text: string,
+    properNouns?: string,
+    opts?: CleanupPromptOpts,
+  ): Promise<string> => {
+    const prompt = buildCleanupPrompt(properNouns, opts);
     const stdin = `${prompt}\n\nTranscript to clean:\n\n${text}`;
 
     let result: SpawnResult;

@@ -12,6 +12,8 @@ const SAMPLE: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
   cleanupProvider: "ollama",
   cleanupDefault: true,
+  cleanupSystemPrompt: null,
+  cleanupContextTemplate: null,
   port: 1943,
   vault: {
     configured: true,
@@ -90,5 +92,16 @@ describe("config-schema", () => {
     const mode = schema.properties.vault.properties.mode;
     expect(mode.enum).toEqual(["off", "fallback", "required"]);
     expect(mode.default).toBe("fallback");
+  });
+
+  test("schema exposes cleanupSystemPrompt + cleanupContextTemplate as optional strings with descriptions", () => {
+    const schema = buildConfigSchema();
+    const systemPrompt = schema.properties.cleanupSystemPrompt;
+    const template = schema.properties.cleanupContextTemplate;
+    expect(systemPrompt.type).toBe("string");
+    expect(systemPrompt.description).toBeString();
+    expect(template.type).toBe("string");
+    expect(template.description).toBeString();
+    expect(template.description).toContain("{{proper_nouns}}");
   });
 });
