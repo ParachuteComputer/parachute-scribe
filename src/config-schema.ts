@@ -12,6 +12,8 @@ export type ResolvedConfig = {
   transcribeProvider: string;
   cleanupProvider: string;
   cleanupDefault: boolean;
+  cleanupSystemPrompt: string | null;
+  cleanupContextTemplate: string | null;
   port: number;
   vault: {
     configured: boolean;
@@ -47,6 +49,16 @@ export function buildConfigSchema() {
         title: "Run cleanup by default",
         description: "When a transcription request omits an explicit cleanup flag, run the cleanup pass anyway.",
         default: true,
+      },
+      cleanupSystemPrompt: {
+        type: "string",
+        title: "Cleanup system prompt override",
+        description: "Optional full override of scribe's built-in cleanup system prompt. When set, the caller owns the entire instruction to the cleanup LLM. The proper-nouns block (from vault or request payload) is still appended after it per cleanupContextTemplate.",
+      },
+      cleanupContextTemplate: {
+        type: "string",
+        title: "Cleanup context-block template",
+        description: "Optional template for how the proper-nouns block is appended after the system prompt. Supports one variable: {{proper_nouns}}. When unset, scribe uses its default rule (append `\\n\\n{proper_nouns}` only if the block is non-empty). When set, the template is always rendered — the caller's template owns its own separators.",
       },
       port: {
         type: "integer",

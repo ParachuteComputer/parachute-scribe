@@ -20,6 +20,21 @@ export type ScribeConfig = {
     provider?: string;
     model?: string;
     default?: boolean;
+    /**
+     * Optional full override of the built-in cleanup system prompt. When set,
+     * the caller owns the entire instruction to the cleanup LLM. The
+     * proper-nouns block (from vault or payload) is still appended per
+     * context_template.
+     */
+    system_prompt?: string;
+    /**
+     * Optional template for how the proper-nouns block is appended after
+     * the system prompt. Supports one variable: {{proper_nouns}}. When unset,
+     * scribe uses its default rule (append `\n\n{proper_nouns}` only if the
+     * block is non-empty). When set, the template is always rendered — the
+     * caller's template owns its own separators.
+     */
+    context_template?: string;
   };
   vault?: {
     url?: string;

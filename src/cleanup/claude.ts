@@ -1,6 +1,10 @@
-import { buildCleanupPrompt } from "./prompt.ts";
+import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
 
-export async function cleanup(text: string, properNouns?: string): Promise<string> {
+export async function cleanup(
+  text: string,
+  properNouns?: string,
+  opts?: CleanupPromptOpts,
+): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
@@ -14,7 +18,7 @@ export async function cleanup(text: string, properNouns?: string): Promise<strin
     body: JSON.stringify({
       model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-20250514",
       max_tokens: 4096,
-      system: buildCleanupPrompt(properNouns),
+      system: buildCleanupPrompt(properNouns, opts),
       messages: [{ role: "user", content: text }],
     }),
   });

@@ -16,7 +16,16 @@ export const transcribers: Record<string, (audio: File) => Promise<string>> = {
   openai,
 };
 
-export type Cleaner = (text: string, properNouns?: string) => Promise<string>;
+export type CleanerOpts = {
+  systemPrompt?: string;
+  contextTemplate?: string;
+};
+
+export type Cleaner = (
+  text: string,
+  properNouns?: string,
+  opts?: CleanerOpts,
+) => Promise<string>;
 
 export const cleaners: Record<string, Cleaner> = {
   claude,
