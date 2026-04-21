@@ -4,6 +4,7 @@ import { transcribe as whisper } from "./transcribe/whisper.ts";
 import { transcribe as groq } from "./transcribe/groq.ts";
 import { transcribe as openai } from "./transcribe/openai.ts";
 import { cleanup as claude } from "./cleanup/claude.ts";
+import { cleanup as claudeCode } from "./cleanup/claude-code.ts";
 import { cleanup as ollama } from "./cleanup/ollama.ts";
 import { openai as openaiCleanup, gemini, groqCleanup, custom } from "./cleanup/openai-compat.ts";
 
@@ -19,6 +20,7 @@ export type Cleaner = (text: string, properNouns?: string) => Promise<string>;
 
 export const cleaners: Record<string, Cleaner> = {
   claude,
+  "claude-code": claudeCode,
   ollama,
   openai: openaiCleanup,
   gemini,
