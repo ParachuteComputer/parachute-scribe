@@ -38,6 +38,8 @@ Environment:
   SCRIBE_CONFIG                       Path to config.json (default: ~/.parachute/scribe/config.json)
   PARACHUTE_HOME                      Override ~/.parachute base (e.g. Docker: /app/.parachute)
   SCRIBE_PORT                         Server port (default: 1943; PORT also honored)
+  SCRIBE_AUTH_TOKEN                   Require Bearer <token> on all routes except
+                                      /health and /.parachute/info (optional)
 
 Examples:
   parachute-scribe recording.wav

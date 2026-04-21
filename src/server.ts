@@ -1,5 +1,5 @@
-import { transcribers, cleaners, getProvider } from "./providers.ts";
-import { loadConfig } from "./config.ts";
+import { cleaners, getProvider, transcribers, type Cleaner } from "./providers.ts";
+import { loadConfig, type ScribeConfig } from "./config.ts";
 import { fetchProperNouns } from "./vault.ts";
 import { preflight, withCors } from "./cors.ts";
 import { upsertService } from "./services-manifest.ts";
@@ -17,7 +17,86 @@ import {
   handleConfig,
   handleConfigSchema,
 } from "./config-schema.ts";
+import { enforceAuth, isAuthRequired } from "./auth.ts";
 import pkg from "../package.json" with { type: "json" };
+
+export type ServerDeps = {
+  transcribe: (file: File) => Promise<string>;
+  cleanup: Cleaner;
+  resolvedConfig: ResolvedConfig;
+  scribeConfig: ScribeConfig;
+};
+
+export function createFetchHandler(deps: ServerDeps) {
+  return async (req: Request): Promise<Response> => {
+    if (req.method === "OPTIONS") return preflight();
+    const url = new URL(req.url);
+    const authErr = enforceAuth(req, url.pathname);
+    if (authErr) return withCors(authErr);
+    return withCors(await route(req, url, deps));
+  };
+}
+
+async function route(req: Request, url: URL, deps: ServerDeps): Promise<Response> {
+  if (url.pathname.startsWith("/.parachute/")) {
+    if (req.method !== "GET") {
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    }
+    if (url.pathname === "/.parachute/info") return handleParachuteInfo();
+    if (url.pathname === "/.parachute/icon.svg") return handleParachuteIcon();
+    if (url.pathname === "/.parachute/config/schema") return handleConfigSchema();
+    if (url.pathname === "/.parachute/config") return handleConfig(deps.resolvedConfig);
+    return new Response("Not found", { status: 404 });
+  }
+
+  if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
+    return handleTranscription(req, deps);
+  }
+
+  if (url.pathname === "/health") {
+    return Response.json({ ok: true });
+  }
+
+  if (url.pathname === "/v1/models") {
+    return Response.json({
+      data: [{ id: deps.resolvedConfig.transcribeProvider, object: "model" }],
+    });
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+async function handleTranscription(req: Request, deps: ServerDeps): Promise<Response> {
+  const form = await req.formData();
+  const file = form.get("file");
+
+  if (!(file instanceof File)) {
+    return Response.json({ error: "missing 'file' field" }, { status: 400 });
+  }
+
+  const { cleanupProvider, cleanupDefault } = deps.resolvedConfig;
+  const cleanupParam = form.get("cleanup");
+  const doCleanup =
+    cleanupProvider !== "none" &&
+    (cleanupParam === "true" || cleanupParam === "1"
+      ? true
+      : cleanupParam === "false" || cleanupParam === "0"
+        ? false
+        : cleanupDefault);
+
+  try {
+    let text = await deps.transcribe(file);
+    if (doCleanup) {
+      const properNouns = await fetchProperNouns(deps.scribeConfig);
+      text = await deps.cleanup(text, properNouns);
+    }
+    return Response.json({ text });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "transcription failed";
+    console.error("Transcription error:", message);
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
 
 export async function startServer() {
   const config = await loadConfig();
@@ -45,17 +124,22 @@ export async function startServer() {
   console.log(`scribe listening on :${PORT}`);
   console.log(`  transcribe: ${TRANSCRIBE}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
+  console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN)" : "open"}`);
   if (config.vault?.url && config.vault.contexts?.length) {
     console.log(`  vault:      ${config.vault.url} (${config.vault.contexts.length} contexts)`);
   }
 
+  const handler = createFetchHandler({
+    transcribe,
+    cleanup,
+    resolvedConfig,
+    scribeConfig: config,
+  });
+
   Bun.serve({
     hostname: "0.0.0.0",
     port: PORT,
-    async fetch(req) {
-      if (req.method === "OPTIONS") return preflight();
-      return withCors(await route(req));
-    },
+    fetch: handler,
   });
 
   try {
@@ -72,65 +156,5 @@ export async function startServer() {
     console.warn(
       `scribe: skipped services manifest update: ${err instanceof Error ? err.message : err}`,
     );
-  }
-
-  async function route(req: Request): Promise<Response> {
-    const url = new URL(req.url);
-
-    if (url.pathname.startsWith("/.parachute/")) {
-      if (req.method !== "GET") {
-        return Response.json({ error: "Method not allowed" }, { status: 405 });
-      }
-      if (url.pathname === "/.parachute/info") return handleParachuteInfo();
-      if (url.pathname === "/.parachute/icon.svg") return handleParachuteIcon();
-      if (url.pathname === "/.parachute/config/schema") return handleConfigSchema();
-      if (url.pathname === "/.parachute/config") return handleConfig(resolvedConfig);
-      return new Response("Not found", { status: 404 });
-    }
-
-    if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
-      return handleTranscription(req);
-    }
-
-    if (url.pathname === "/health") {
-      return Response.json({ ok: true });
-    }
-
-    if (url.pathname === "/v1/models") {
-      return Response.json({
-        data: [{ id: TRANSCRIBE, object: "model" }],
-      });
-    }
-
-    return new Response("Not found", { status: 404 });
-  }
-
-  async function handleTranscription(req: Request): Promise<Response> {
-    const form = await req.formData();
-    const file = form.get("file");
-
-    if (!(file instanceof File)) {
-      return Response.json({ error: "missing 'file' field" }, { status: 400 });
-    }
-
-    const cleanupParam = form.get("cleanup");
-    const doCleanup = CLEANUP !== "none" && (
-      cleanupParam === "true" || cleanupParam === "1" ? true :
-      cleanupParam === "false" || cleanupParam === "0" ? false :
-      CLEANUP_DEFAULT
-    );
-
-    try {
-      let text = await transcribe(file);
-      if (doCleanup) {
-        const properNouns = await fetchProperNouns(config);
-        text = await cleanup(text, properNouns);
-      }
-      return Response.json({ text });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "transcription failed";
-      console.error("Transcription error:", message);
-      return Response.json({ error: message }, { status: 500 });
-    }
   }
 }
