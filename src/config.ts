@@ -31,9 +31,11 @@ export type ScribeConfig = {
      * NOT carry a `context` part. Defaults to "fallback" (today's behavior).
      *
      *   - "off"      — never call vault; if no context in payload, no proper nouns
-     *   - "fallback" — call vault; if unreachable, continue with no proper nouns
-     *   - "required" — call vault; if unreachable, propagate the error
-     *                  (PR #18's wrapper catches it → raw transcription survives)
+     *   - "fallback" — call vault; if unreachable, continue cleanup with no proper nouns
+     *   - "required" — call vault; if unreachable, the cleanup step raises.
+     *                  handleTranscription's cleanup-failure wrapper catches it
+     *                  and returns 200 with the raw transcription (no cleanup).
+     *                  Transcription always survives vault outages.
      */
     mode?: VaultMode;
   };

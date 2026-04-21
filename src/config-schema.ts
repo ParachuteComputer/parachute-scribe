@@ -78,7 +78,7 @@ export function buildConfigSchema() {
             enum: VAULT_MODES,
             default: "fallback",
             title: "Vault fetch mode",
-            description: "How scribe handles the vault backchannel when the request payload does NOT carry a `context` part. off = never call vault; fallback = call vault, ignore errors (default); required = call vault, propagate errors.",
+            description: "How scribe handles the vault backchannel when the request payload does NOT carry a `context` part. off = never call vault. fallback (default) = call vault; if unreachable, continue cleanup with no proper nouns. required = call vault; if unreachable, the cleanup step raises — the transcription pipeline's cleanup-failure wrapper catches it and the caller still gets a 200 with the raw transcription (no cleanup applied).",
           },
         },
       },

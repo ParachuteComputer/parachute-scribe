@@ -313,6 +313,40 @@ describe("createFetchHandler — context-in-payload + vault.mode", () => {
     }
   });
 
+  test("vault.mode='required' + vault unreachable + no context → 200 with raw transcription, cleanup skipped, error logged", async () => {
+    // Point the mocked fetch at "ECONNREFUSED" for vault calls.
+    globalThis.fetch = (async (input: Request | string | URL) => {
+      const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
+      if (url.pathname.startsWith("/api/notes")) {
+        throw new Error("ECONNREFUSED");
+      }
+      throw new Error(`unexpected fetch: ${url.toString()}`);
+    }) as unknown as typeof fetch;
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.map((a) => String(a)).join(" ")); };
+
+    try {
+      const handler = buildHandler({
+        transcribe: async () => "raw transcribed words",
+        cleanup: async (text) => `cleaned(${text})`, // should not be invoked — vault throws first
+        resolvedConfig: CLEANUP_RESOLVED,
+        scribeConfig: {
+          vault: { ...VAULT_CONFIG.vault!, mode: "required" },
+        },
+      });
+      const res = await handler(reqWithContext(null));
+
+      // The wrapper from PR #18 is the backstop — transcription always survives.
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ text: "raw transcribed words" });
+      expect(errors.some((e) => e.includes("Cleanup failed") && e.includes("ECONNREFUSED"))).toBe(true);
+    } finally {
+      console.error = origError;
+    }
+  });
+
   test("empty entries context part → vault NOT called, cleaner gets empty nouns", async () => {
     let seenNouns = "sentinel";
     const handler = buildHandler({
