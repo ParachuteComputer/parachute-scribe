@@ -1,9 +1,12 @@
 import { cleaners, transcribers } from "./providers.ts";
+import type { VaultMode } from "./config.ts";
 
 export const SCOPES = {
   "scribe:transcribe": "Submit audio for transcription (request-time, per-call).",
   "scribe:admin": "Read and write scribe configuration. Reserved — not enforced yet (scribe is loopback-trusted through launch).",
 } as const;
+
+export const VAULT_MODES: VaultMode[] = ["off", "fallback", "required"];
 
 export type ResolvedConfig = {
   transcribeProvider: string;
@@ -14,6 +17,7 @@ export type ResolvedConfig = {
     configured: boolean;
     url: string | null;
     cacheTtlSeconds: number | null;
+    mode: VaultMode;
   };
 };
 
@@ -54,7 +58,7 @@ export function buildConfigSchema() {
       vault: {
         type: "object",
         title: "Vault integration",
-        description: "Optional — point scribe at a Parachute Vault so cleanup gets proper-noun context (names, projects, aliases).",
+        description: "Optional — point scribe at a Parachute Vault so cleanup gets proper-noun context (names, projects, aliases). Callers may also supply context directly in the request payload, in which case scribe skips the vault backchannel entirely.",
         properties: {
           url: {
             type: "string",
@@ -68,6 +72,13 @@ export function buildConfigSchema() {
             title: "Cache TTL (seconds)",
             description: "How long to cache the fetched proper-noun list before refetching.",
             default: 300,
+          },
+          mode: {
+            type: "string",
+            enum: VAULT_MODES,
+            default: "fallback",
+            title: "Vault fetch mode",
+            description: "How scribe handles the vault backchannel when the request payload does NOT carry a `context` part. off = never call vault. fallback (default) = call vault; if unreachable, continue cleanup with no proper nouns. required = call vault; if unreachable, the cleanup step raises — the transcription pipeline's cleanup-failure wrapper catches it and the caller still gets a 200 with the raw transcription (no cleanup applied).",
           },
         },
       },

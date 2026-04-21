@@ -133,6 +133,59 @@ describe("fetchProperNouns", () => {
     await fetchProperNouns(config);
     expect(hits).toBe(1);
   });
+
+  describe("vault.mode", () => {
+    test("mode: 'off' returns empty without making any HTTP call", async () => {
+      let called = false;
+      mockFetch(() => {
+        called = true;
+        return Response.json([]);
+      });
+
+      const config: ScribeConfig = {
+        vault: {
+          url: "http://localhost:1940",
+          contexts: [{ tag: "person" }],
+          mode: "off",
+        },
+      };
+
+      expect(await fetchProperNouns(config)).toBe("");
+      expect(called).toBe(false);
+    });
+
+    test("mode: 'required' propagates fetch errors instead of swallowing them", async () => {
+      mockFetch(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const config: ScribeConfig = {
+        vault: {
+          url: "http://localhost:9",
+          contexts: [{ tag: "person" }],
+          mode: "required",
+        },
+      };
+
+      await expect(fetchProperNouns(config)).rejects.toThrow(/ECONNREFUSED/);
+    });
+
+    test("mode: 'fallback' (default) swallows errors and returns empty", async () => {
+      mockFetch(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const config: ScribeConfig = {
+        vault: {
+          url: "http://localhost:9",
+          contexts: [{ tag: "person" }],
+          mode: "fallback",
+        },
+      };
+
+      expect(await fetchProperNouns(config)).toBe("");
+    });
+  });
 });
 
 describe("buildCleanupPrompt", () => {

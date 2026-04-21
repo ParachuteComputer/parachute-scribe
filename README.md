@@ -164,11 +164,25 @@ curl -H "Authorization: Bearer $SCRIBE_AUTH_TOKEN" \
 
 401 response shape: `{"error":"unauthorized","message":"SCRIBE_AUTH_TOKEN required"}`. CORS headers are included so browser clients can read the error.
 
-## Vault-aware cleanup (optional)
+## Proper-noun context
 
-Point scribe at a [Parachute Vault](https://github.com/ParachuteComputer/parachute-vault) and the cleanup pass will learn the proper nouns you care about — correcting mishearings ("learn by build" → "Learn Vibe Build") and wrapping matches in `[[wikilinks]]` so transcribed memos land pre-linked in your graph.
+Cleanup improves when scribe knows the proper nouns you care about — so mishearings like "learn by build" become "Learn Vibe Build". Scribe accepts context in two ways:
 
-Copy `scribe.config.example.json` to `~/.parachute/scribe/config.json` (or `$PARACHUTE_HOME/scribe/config.json`) and edit:
+### 1. Pushed in the request (preferred)
+
+Callers send a `context` multipart part alongside the audio. This is what [Parachute Vault](https://github.com/ParachuteComputer/parachute-vault) does — it queries its own notes and pushes the result with each transcription.
+
+```bash
+curl -F "file=@memo.wav" \
+  -F 'context={"entries":[{"name":"Learn Vibe Build","summary":"6-week cohort","aliases":["LVB","Learn by Build"]}]};type=application/json' \
+  http://localhost:1943/v1/audio/transcriptions
+```
+
+When `context` is present in the request, scribe uses it directly and does **not** call back into any vault.
+
+### 2. Pulled from a Parachute Vault (opt-in)
+
+If no `context` part is supplied, scribe can optionally fetch proper nouns from a configured vault. Copy `scribe.config.example.json` to `~/.parachute/scribe/config.json` (or `$PARACHUTE_HOME/scribe/config.json`) and edit:
 
 ```json
 {
@@ -176,6 +190,7 @@ Copy `scribe.config.example.json` to `~/.parachute/scribe/config.json` (or `$PAR
   "vault": {
     "url": "http://localhost:1940",
     "token": "pvt_read_only_token",
+    "mode": "fallback",
     "contexts": [
       { "tag": "person",  "exclude_tag": "archived", "include_metadata": ["summary", "aliases"] },
       { "tag": "project", "exclude_tag": "archived", "include_metadata": ["summary", "aliases"] }
@@ -184,7 +199,13 @@ Copy `scribe.config.example.json` to `~/.parachute/scribe/config.json` (or `$PAR
 }
 ```
 
-Scribe fetches the proper-noun list once per `cache_ttl_seconds` (default 300) and injects it into the cleanup prompt. If the vault is unreachable, cleanup still runs — just without the context.
+`vault.mode` controls how scribe handles the backchannel when a request lacks a `context` part:
+
+- `off` — never call vault
+- `fallback` (default) — call vault; if unreachable, continue with no proper nouns
+- `required` — call vault; if unreachable, the cleanup step fails (PR #18's wrapper still returns the raw transcription)
+
+Scribe caches the fetched list for `cache_ttl_seconds` (default 300).
 
 Default config path is `${PARACHUTE_HOME:-~/.parachute}/scribe/config.json`. Set `SCRIBE_CONFIG=/path/to/config.json` (or pass `--config <path>` on the CLI) to point somewhere else. An older `~/.parachute/scribe.config.json` is auto-migrated to the new path on first run.
 

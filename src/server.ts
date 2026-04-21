@@ -1,6 +1,7 @@
 import { cleaners, getProvider, transcribers, type Cleaner } from "./providers.ts";
-import { loadConfig, type ScribeConfig } from "./config.ts";
+import { DEFAULT_VAULT_MODE, loadConfig, type ScribeConfig } from "./config.ts";
 import { fetchProperNouns } from "./vault.ts";
+import { buildProperNounsBlockFromEntries, parseContextPayload } from "./context.ts";
 import { preflight, withCors } from "./cors.ts";
 import { upsertService } from "./services-manifest.ts";
 import {
@@ -84,6 +85,16 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
         ? false
         : cleanupDefault);
 
+  const contextPart = form.get("context");
+  let contextPayload: ReturnType<typeof parseContextPayload> = null;
+  if (contextPart != null) {
+    const raw = contextPart instanceof Blob ? await contextPart.text() : String(contextPart);
+    contextPayload = parseContextPayload(raw);
+    if (!contextPayload) {
+      console.warn("[scribe] malformed 'context' part in transcription request — ignoring, will fall through to vault");
+    }
+  }
+
   let text: string;
   try {
     text = await deps.transcribe(file);
@@ -95,7 +106,7 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
 
   if (doCleanup) {
     try {
-      const properNouns = await fetchProperNouns(deps.scribeConfig);
+      const properNouns = await resolveProperNouns(deps.scribeConfig, contextPayload);
       text = await deps.cleanup(text, properNouns);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -104,6 +115,16 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
   }
 
   return Response.json({ text });
+}
+
+async function resolveProperNouns(
+  config: ScribeConfig,
+  contextPayload: ReturnType<typeof parseContextPayload>,
+): Promise<string> {
+  if (contextPayload) return buildProperNounsBlockFromEntries(contextPayload);
+  const mode = config.vault?.mode ?? DEFAULT_VAULT_MODE;
+  if (mode === "off") return "";
+  return fetchProperNouns(config);
 }
 
 export async function startServer() {
@@ -126,6 +147,7 @@ export async function startServer() {
       configured: Boolean(config.vault?.url),
       url: config.vault?.url ?? null,
       cacheTtlSeconds: config.vault?.cache_ttl_seconds ?? null,
+      mode: config.vault?.mode ?? DEFAULT_VAULT_MODE,
     },
   };
 

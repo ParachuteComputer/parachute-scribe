@@ -17,6 +17,7 @@ const SAMPLE: ResolvedConfig = {
     configured: true,
     url: "http://localhost:1940",
     cacheTtlSeconds: 300,
+    mode: "fallback",
   },
 };
 
@@ -76,11 +77,18 @@ describe("config-schema", () => {
   test("handleConfig reflects an unconfigured vault with nulls", async () => {
     const res = handleConfig({
       ...SAMPLE,
-      vault: { configured: false, url: null, cacheTtlSeconds: null },
+      vault: { configured: false, url: null, cacheTtlSeconds: null, mode: "fallback" },
     });
     const body = (await res.json()) as ResolvedConfig;
     expect(body.vault.configured).toBe(false);
     expect(body.vault.url).toBeNull();
     expect(body.vault.cacheTtlSeconds).toBeNull();
+  });
+
+  test("schema exposes vault.mode enum + default 'fallback'", () => {
+    const schema = buildConfigSchema();
+    const mode = schema.properties.vault.properties.mode;
+    expect(mode.enum).toEqual(["off", "fallback", "required"]);
+    expect(mode.default).toBe("fallback");
   });
 });
