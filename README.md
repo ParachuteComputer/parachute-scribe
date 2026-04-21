@@ -142,7 +142,27 @@ CUSTOM_CLEANUP_MODEL=...
 
 # Server
 SCRIBE_PORT=1943                     # HTTP server port (PORT also honored for back-compat)
+
+# Auth (optional)
+SCRIBE_AUTH_TOKEN=                   # If set, require Authorization: Bearer <token> on all routes
+                                     # except /health and /.parachute/info. Unset = open (loopback-only).
 ```
+
+## Auth
+
+By default scribe is open — any caller on a network it's bound to can transcribe. For exposed deployments (tailnet, funnel, shared hosts), set `SCRIBE_AUTH_TOKEN` and pass it as `Authorization: Bearer <token>` on every request. `/health` and `/.parachute/info` stay open so liveness probes and module discovery work without a secret.
+
+```bash
+SCRIBE_AUTH_TOKEN=$(openssl rand -hex 32) bun src/cli.ts serve
+```
+
+```bash
+curl -H "Authorization: Bearer $SCRIBE_AUTH_TOKEN" \
+  -F "file=@recording.wav" \
+  http://localhost:1943/v1/audio/transcriptions
+```
+
+401 response shape: `{"error":"unauthorized","message":"SCRIBE_AUTH_TOKEN required"}`. CORS headers are included so browser clients can read the error.
 
 ## Vault-aware cleanup (optional)
 
