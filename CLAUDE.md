@@ -22,7 +22,7 @@ Library (import transcribe)    ─┘
 
 ## Key design decisions
 
-- **Stateless by design** — scribe never initiates outbound HTTP. Callers provide whatever context they want cleaned-up around (names, project glossary) in the request payload. The built-in vault client is being removed; see the "stateless-scribe" initiative (PRs #16, and the two follow-ups tracking context-in-payload + `vault.ts` deletion).
+- **Stateless by design** — scribe never initiates outbound HTTP. Callers provide whatever context they want cleaned-up around (names, project glossary) in the request payload via the `context` multipart part. The built-in vault client was removed in 0.3.0 (stateless-scribe initiative complete). A stale `vault:` block in an old config logs a one-time warning and is ignored.
 - **Auth gate is opt-in** — `SCRIBE_AUTH_TOKEN` unset = open (loopback-trusted). Set = require `Authorization: Bearer <token>` on every route except `/health` and `/.parachute/info` (liveness probes and module discovery stay open so hub/CLI can reach scribe without knowing a secret). 401 responses carry full CORS headers so browser clients can read the error.
 - **Scopes declared, not yet enforced** — `scribe:transcribe` + `scribe:admin` are listed under `x-scopes` in the config schema. When the hub starts issuing JWTs, scribe enforces without an API-shape change.
 - **Provider resolution precedence**: `--flag` > `config.json` > env > default. Same three-tier pattern for every knob.

@@ -15,12 +15,6 @@ const SAMPLE: ResolvedConfig = {
   cleanupSystemPrompt: null,
   cleanupContextTemplate: null,
   port: 1943,
-  vault: {
-    configured: true,
-    url: "http://localhost:1940",
-    cacheTtlSeconds: 300,
-    mode: "fallback",
-  },
 };
 
 describe("config-schema", () => {
@@ -42,13 +36,16 @@ describe("config-schema", () => {
     expect(cleanup.enum).toContain("none");
   });
 
-  test("schema exposes port, cleanupDefault, and vault object", () => {
+  test("schema exposes port + cleanupDefault", () => {
     const schema = buildConfigSchema();
     expect(schema.properties.port.type).toBe("integer");
     expect(schema.properties.cleanupDefault.type).toBe("boolean");
-    expect(schema.properties.vault.type).toBe("object");
-    expect(schema.properties.vault.properties.url).toBeDefined();
-    expect(schema.properties.vault.properties.cacheTtlSeconds).toBeDefined();
+  });
+
+  test("schema has no vault surface (backchannel removed in 0.3.0)", () => {
+    const schema = buildConfigSchema();
+    const props = schema.properties as Record<string, unknown>;
+    expect(props.vault).toBeUndefined();
   });
 
   test("schema declares scribe:transcribe and scribe:admin scopes via x-scopes", () => {
@@ -76,22 +73,10 @@ describe("config-schema", () => {
     expect(body).toEqual(SAMPLE);
   });
 
-  test("handleConfig reflects an unconfigured vault with nulls", async () => {
-    const res = handleConfig({
-      ...SAMPLE,
-      vault: { configured: false, url: null, cacheTtlSeconds: null, mode: "fallback" },
-    });
-    const body = (await res.json()) as ResolvedConfig;
-    expect(body.vault.configured).toBe(false);
-    expect(body.vault.url).toBeNull();
-    expect(body.vault.cacheTtlSeconds).toBeNull();
-  });
-
-  test("schema exposes vault.mode enum + default 'fallback'", () => {
-    const schema = buildConfigSchema();
-    const mode = schema.properties.vault.properties.mode;
-    expect(mode.enum).toEqual(["off", "fallback", "required"]);
-    expect(mode.default).toBe("fallback");
+  test("handleConfig output does not carry any vault field", async () => {
+    const res = handleConfig(SAMPLE);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.vault).toBeUndefined();
   });
 
   test("schema exposes cleanupSystemPrompt + cleanupContextTemplate as optional strings with descriptions", () => {

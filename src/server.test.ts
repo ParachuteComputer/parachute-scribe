@@ -3,7 +3,6 @@ import { createFetchHandler, type ServerDeps } from "./server.ts";
 import type { ResolvedConfig } from "./config-schema.ts";
 import type { Cleaner } from "./providers.ts";
 import type { ScribeConfig } from "./config.ts";
-import { clearVaultCache } from "./vault.ts";
 
 const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
@@ -12,7 +11,6 @@ const RESOLVED: ResolvedConfig = {
   cleanupSystemPrompt: null,
   cleanupContextTemplate: null,
   port: 1943,
-  vault: { configured: false, url: null, cacheTtlSeconds: null, mode: "fallback" },
 };
 
 function buildHandler(overrides: Partial<ServerDeps> = {}): (req: Request) => Promise<Response> {
@@ -218,37 +216,28 @@ describe("createFetchHandler — cleanup failure behavior", () => {
   });
 });
 
-describe("createFetchHandler — context-in-payload + vault.mode", () => {
+describe("createFetchHandler — context-in-payload (only source of proper nouns)", () => {
   const CLEANUP_RESOLVED: ResolvedConfig = {
     ...RESOLVED,
     cleanupProvider: "claude",
     cleanupDefault: true,
   };
-  const VAULT_CONFIG: ScribeConfig = {
-    vault: {
-      url: "http://localhost:1940",
-      contexts: [{ tag: "person" }],
-    },
-  };
+  const EMPTY_CONFIG: ScribeConfig = {};
 
   let originalToken: string | undefined;
   let realFetch: typeof globalThis.fetch;
-  let vaultCalls: number;
+  let outboundCalls: URL[];
 
   beforeEach(() => {
     originalToken = process.env.SCRIBE_AUTH_TOKEN;
     delete process.env.SCRIBE_AUTH_TOKEN;
     realFetch = globalThis.fetch;
-    vaultCalls = 0;
+    outboundCalls = [];
     globalThis.fetch = (async (input: Request | string | URL) => {
       const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
-      if (url.pathname.startsWith("/api/notes")) {
-        vaultCalls++;
-        return Response.json([{ path: "People/FromVault", metadata: { summary: "vault-side" } }]);
-      }
-      throw new Error(`unexpected fetch: ${url.toString()}`);
-    }) as typeof fetch;
-    clearVaultCache();
+      outboundCalls.push(url);
+      throw new Error(`unexpected outbound fetch: ${url.toString()}`);
+    }) as unknown as typeof fetch;
   });
 
   afterEach(() => {
@@ -269,7 +258,7 @@ describe("createFetchHandler — context-in-payload + vault.mode", () => {
     });
   }
 
-  test("context part present → cleaner sees payload-derived nouns, vault is NOT called", async () => {
+  test("context part present → cleaner sees payload-derived nouns, no outbound fetch", async () => {
     let seenNouns = "";
     const handler = buildHandler({
       cleanup: async (text, nouns) => {
@@ -277,7 +266,7 @@ describe("createFetchHandler — context-in-payload + vault.mode", () => {
         return `cleaned(${text})`;
       },
       resolvedConfig: CLEANUP_RESOLVED,
-      scribeConfig: VAULT_CONFIG,
+      scribeConfig: EMPTY_CONFIG,
     });
     const contextJson = JSON.stringify({
       entries: [{ name: "Margaret", summary: "Close friend", aliases: ["Marg"] }],
@@ -285,93 +274,54 @@ describe("createFetchHandler — context-in-payload + vault.mode", () => {
     const res = await handler(reqWithContext(contextJson));
 
     expect(res.status).toBe(200);
-    expect(vaultCalls).toBe(0);
+    expect(outboundCalls.length).toBe(0);
     expect(seenNouns).toContain("## Known names in this context");
     expect(seenNouns).toContain("- Margaret — Close friend (also: \"Marg\")");
-    expect(seenNouns).not.toContain("FromVault");
   });
 
-  test("no context part + vault configured (default mode) → vault IS called", async () => {
+  test("no context part → cleaner gets empty nouns, no outbound fetch", async () => {
+    let seenNouns = "sentinel";
     const handler = buildHandler({
-      cleanup: async (text) => `cleaned(${text})`,
-      resolvedConfig: CLEANUP_RESOLVED,
-      scribeConfig: VAULT_CONFIG,
-    });
-    const res = await handler(reqWithContext(null));
-
-    expect(res.status).toBe(200);
-    expect(vaultCalls).toBeGreaterThan(0);
-  });
-
-  test("no context part + vault.mode='off' → vault is NOT called", async () => {
-    const handler = buildHandler({
-      cleanup: async (text) => `cleaned(${text})`,
-      resolvedConfig: CLEANUP_RESOLVED,
-      scribeConfig: {
-        vault: { ...VAULT_CONFIG.vault!, mode: "off" },
+      cleanup: async (text, nouns) => {
+        seenNouns = nouns ?? "";
+        return `cleaned(${text})`;
       },
+      resolvedConfig: CLEANUP_RESOLVED,
+      scribeConfig: EMPTY_CONFIG,
     });
     const res = await handler(reqWithContext(null));
 
     expect(res.status).toBe(200);
-    expect(vaultCalls).toBe(0);
+    expect(outboundCalls.length).toBe(0);
+    expect(seenNouns).toBe("");
   });
 
-  test("malformed context JSON → logged + falls through to vault", async () => {
-    let warnings: string[] = [];
+  test("malformed context JSON → logged + cleanup runs with empty nouns", async () => {
+    const warnings: string[] = [];
     const origWarn = console.warn;
     console.warn = (...args: unknown[]) => { warnings.push(args.map((a) => String(a)).join(" ")); };
     try {
+      let seenNouns = "sentinel";
       const handler = buildHandler({
-        cleanup: async (text) => `cleaned(${text})`,
+        cleanup: async (text, nouns) => {
+          seenNouns = nouns ?? "";
+          return `cleaned(${text})`;
+        },
         resolvedConfig: CLEANUP_RESOLVED,
-        scribeConfig: VAULT_CONFIG,
+        scribeConfig: EMPTY_CONFIG,
       });
       const res = await handler(reqWithContext("not valid json"));
 
       expect(res.status).toBe(200);
       expect(warnings.some((w) => w.includes("malformed 'context' part"))).toBe(true);
-      expect(vaultCalls).toBeGreaterThan(0);
+      expect(seenNouns).toBe("");
+      expect(outboundCalls.length).toBe(0);
     } finally {
       console.warn = origWarn;
     }
   });
 
-  test("vault.mode='required' + vault unreachable + no context → 200 with raw transcription, cleanup skipped, error logged", async () => {
-    // Point the mocked fetch at "ECONNREFUSED" for vault calls.
-    globalThis.fetch = (async (input: Request | string | URL) => {
-      const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
-      if (url.pathname.startsWith("/api/notes")) {
-        throw new Error("ECONNREFUSED");
-      }
-      throw new Error(`unexpected fetch: ${url.toString()}`);
-    }) as unknown as typeof fetch;
-
-    const errors: string[] = [];
-    const origError = console.error;
-    console.error = (...args: unknown[]) => { errors.push(args.map((a) => String(a)).join(" ")); };
-
-    try {
-      const handler = buildHandler({
-        transcribe: async () => "raw transcribed words",
-        cleanup: async (text) => `cleaned(${text})`, // should not be invoked — vault throws first
-        resolvedConfig: CLEANUP_RESOLVED,
-        scribeConfig: {
-          vault: { ...VAULT_CONFIG.vault!, mode: "required" },
-        },
-      });
-      const res = await handler(reqWithContext(null));
-
-      // The wrapper from PR #18 is the backstop — transcription always survives.
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ text: "raw transcribed words" });
-      expect(errors.some((e) => e.includes("Cleanup failed") && e.includes("ECONNREFUSED"))).toBe(true);
-    } finally {
-      console.error = origError;
-    }
-  });
-
-  test("empty entries context part → vault NOT called, cleaner gets empty nouns", async () => {
+  test("empty entries context part → cleaner gets empty nouns", async () => {
     let seenNouns = "sentinel";
     const handler = buildHandler({
       cleanup: async (text, nouns) => {
@@ -379,12 +329,12 @@ describe("createFetchHandler — context-in-payload + vault.mode", () => {
         return text;
       },
       resolvedConfig: CLEANUP_RESOLVED,
-      scribeConfig: VAULT_CONFIG,
+      scribeConfig: EMPTY_CONFIG,
     });
     const res = await handler(reqWithContext(JSON.stringify({ entries: [] })));
 
     expect(res.status).toBe(200);
-    expect(vaultCalls).toBe(0);
     expect(seenNouns).toBe("");
+    expect(outboundCalls.length).toBe(0);
   });
 });

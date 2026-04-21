@@ -2,16 +2,6 @@ import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type VaultContext = {
-  tag: string;
-  exclude_tag?: string | string[];
-  include_metadata?: string[];
-};
-
-export type VaultMode = "off" | "fallback" | "required";
-
-export const DEFAULT_VAULT_MODE: VaultMode = "fallback";
-
 export type ScribeConfig = {
   transcribe?: {
     provider?: string;
@@ -23,8 +13,8 @@ export type ScribeConfig = {
     /**
      * Optional full override of the built-in cleanup system prompt. When set,
      * the caller owns the entire instruction to the cleanup LLM. The
-     * proper-nouns block (from vault or payload) is still appended per
-     * context_template.
+     * proper-nouns block (from the request `context` part) is still appended
+     * per context_template.
      */
     system_prompt?: string;
     /**
@@ -35,24 +25,6 @@ export type ScribeConfig = {
      * caller's template owns its own separators.
      */
     context_template?: string;
-  };
-  vault?: {
-    url?: string;
-    token?: string;
-    contexts?: VaultContext[];
-    cache_ttl_seconds?: number;
-    /**
-     * How scribe handles the vault backchannel when the request payload does
-     * NOT carry a `context` part. Defaults to "fallback" (today's behavior).
-     *
-     *   - "off"      — never call vault; if no context in payload, no proper nouns
-     *   - "fallback" — call vault; if unreachable, continue cleanup with no proper nouns
-     *   - "required" — call vault; if unreachable, the cleanup step raises.
-     *                  handleTranscription's cleanup-failure wrapper catches it
-     *                  and returns 200 with the raw transcription (no cleanup).
-     *                  Transcription always survives vault outages.
-     */
-    mode?: VaultMode;
   };
 };
 
@@ -79,12 +51,23 @@ function migrateLegacyConfig(canonical: string): void {
 async function readJsonConfig(path: string): Promise<ScribeConfig | undefined> {
   const file = Bun.file(path);
   if (!(await file.exists())) return undefined;
+  let parsed: unknown;
   try {
-    return (await file.json()) as ScribeConfig;
+    parsed = await file.json();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to parse config ${path}: ${message}`);
   }
+  warnIfStaleVaultBlock(parsed, path);
+  return parsed as ScribeConfig;
+}
+
+function warnIfStaleVaultBlock(parsed: unknown, path: string): void {
+  if (!parsed || typeof parsed !== "object") return;
+  if (!("vault" in parsed)) return;
+  console.warn(
+    `[scribe] "vault" block in ${path} ignored — scribe no longer calls back to vault; callers push context in the request payload now`,
+  );
 }
 
 export async function loadConfig(path?: string): Promise<ScribeConfig> {

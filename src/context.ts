@@ -30,8 +30,8 @@ export interface ContextPayload {
 
 /**
  * Tolerant parser. Accepts either a raw JSON string or a pre-parsed object.
- * Returns null on malformed input so the caller can fall through to vault
- * fetch rather than 400-ing the whole transcription.
+ * Returns null on malformed input so the caller can log and fall through to
+ * cleanup-without-proper-nouns rather than 400-ing the whole transcription.
  */
 export function parseContextPayload(raw: unknown): ContextPayload | null {
   let parsed: unknown = raw;

@@ -3,7 +3,6 @@
 import { transcribers, cleaners, getProvider } from "./providers.ts";
 import { startServer } from "./server.ts";
 import { loadConfig } from "./config.ts";
-import { fetchProperNouns } from "./vault.ts";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -102,8 +101,10 @@ async function cmdTranscribe(filePath: string) {
   let text = await transcribe(audioFile);
 
   if (cleanupProvider !== "none") {
-    const properNouns = await fetchProperNouns(config);
-    text = await cleanup(text, properNouns);
+    text = await cleanup(text, "", {
+      systemPrompt: config.cleanup?.system_prompt,
+      contextTemplate: config.cleanup?.context_template,
+    });
   }
 
   if (outputJson) {
