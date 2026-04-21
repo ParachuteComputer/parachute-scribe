@@ -8,6 +8,10 @@ export type VaultContext = {
   include_metadata?: string[];
 };
 
+export type VaultMode = "off" | "fallback" | "required";
+
+export const DEFAULT_VAULT_MODE: VaultMode = "fallback";
+
 export type ScribeConfig = {
   transcribe?: {
     provider?: string;
@@ -18,10 +22,20 @@ export type ScribeConfig = {
     default?: boolean;
   };
   vault?: {
-    url: string;
+    url?: string;
     token?: string;
     contexts?: VaultContext[];
     cache_ttl_seconds?: number;
+    /**
+     * How scribe handles the vault backchannel when the request payload does
+     * NOT carry a `context` part. Defaults to "fallback" (today's behavior).
+     *
+     *   - "off"      — never call vault; if no context in payload, no proper nouns
+     *   - "fallback" — call vault; if unreachable, continue with no proper nouns
+     *   - "required" — call vault; if unreachable, propagate the error
+     *                  (PR #18's wrapper catches it → raw transcription survives)
+     */
+    mode?: VaultMode;
   };
 };
 

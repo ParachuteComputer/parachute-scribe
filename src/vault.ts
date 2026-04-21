@@ -1,4 +1,4 @@
-import type { ScribeConfig, VaultContext } from "./config.ts";
+import { DEFAULT_VAULT_MODE, type ScribeConfig, type VaultContext } from "./config.ts";
 
 type NoteRow = {
   path: string;
@@ -21,6 +21,8 @@ export function clearVaultCache() {
 
 export async function fetchProperNouns(config: ScribeConfig): Promise<string> {
   const vault = config.vault;
+  const mode = vault?.mode ?? DEFAULT_VAULT_MODE;
+  if (mode === "off") return "";
   if (!vault?.url || !vault.contexts?.length) return "";
 
   const ttlMs = (vault.cache_ttl_seconds ?? DEFAULT_TTL_SECONDS) * 1000;
@@ -45,6 +47,7 @@ export async function fetchProperNouns(config: ScribeConfig): Promise<string> {
     cache.set(cacheKey, { at: Date.now(), value: body });
     return body;
   } catch (err) {
+    if (mode === "required") throw err;
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[scribe] vault proper-noun fetch failed: ${message}`);
     return "";
