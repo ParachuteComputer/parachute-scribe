@@ -45,6 +45,7 @@ Examples:
   parachute-scribe recording.wav
   parachute-scribe meeting.m4a --cleanup claude
   parachute-scribe memo.mp3 --transcribe groq --cleanup ollama
+  parachute-scribe note.wav --cleanup claude-code    # uses your Claude Code auth
   parachute-scribe serve
 `);
 }
