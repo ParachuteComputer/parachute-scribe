@@ -18,7 +18,7 @@ Library (import transcribe)    ─┘
 - **`src/auth.ts`** (PR #16) — single `validateToken(token) → {valid, scopes}` seam. Today: shared-secret string compare against `SCRIBE_AUTH_TOKEN`. Tomorrow: hub-issued JWT, body swap, callers unchanged.
 - **`src/config.ts` / `src/config-schema.ts`** — file shape + loader; draft-07 JSON Schema served at `/.parachute/config/schema` (provider enums sourced from the live registry so the schema can't drift).
 - **`src/parachute-info.ts`** — `/.parachute/info` + `/.parachute/icon.svg` (hub discovery contract).
-- **`src/services-manifest.ts`** — atomic upsert into `~/.parachute/services.json` on `serve` boot so the CLI coordinator can find scribe.
+- **`src/services-manifest.ts`** — atomic upsert into `~/.parachute/services.json` on `serve` boot so the hub can find scribe.
 
 ## Key design decisions
 
