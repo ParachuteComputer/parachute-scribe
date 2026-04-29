@@ -1,6 +1,6 @@
 {
   "name": "@openparachute/scribe",
-  "version": "0.3.1",
+  "version": "0.4.0-rc.1",
   "description": "Audio transcription + LLM cleanup. Whisper-compatible API for Parachute.",
   "module": "src/index.ts",
   "type": "module",
@@ -9,11 +9,29 @@
   "bin": {
     "parachute-scribe": "src/cli.ts"
   },
+  "files": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    ".parachute/module.json",
+    "scribe.config.example.json",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "start": "bun run src/cli.ts serve"
+    "start": "bun run src/cli.ts serve",
+    "test": "bun test src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "^6.2.2"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "^5"
   },
   "peerDependencies": {
     "typescript": "^5"

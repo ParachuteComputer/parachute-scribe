@@ -17,7 +17,14 @@ import {
   handleConfig,
   handleConfigSchema,
 } from "./config-schema.ts";
-import { enforceAuth, isAuthRequired } from "./auth.ts";
+import {
+  SCOPE_ADMIN,
+  SCOPE_TRANSCRIBE,
+  enforceAuth,
+  hasScope,
+  insufficientScopeResponse,
+  isAuthRequired,
+} from "./auth.ts";
 import pkg from "../package.json" with { type: "json" };
 
 export type ServerDeps = {
@@ -31,13 +38,38 @@ export function createFetchHandler(deps: ServerDeps) {
   return async (req: Request): Promise<Response> => {
     if (req.method === "OPTIONS") return preflight();
     const url = new URL(req.url);
-    const authErr = enforceAuth(req, url.pathname);
-    if (authErr) return withCors(authErr);
-    return withCors(await route(req, url, deps));
+    const auth = await enforceAuth(req, url.pathname);
+    if (auth instanceof Response) return withCors(auth);
+    return withCors(await route(req, url, auth.scopes, deps));
   };
 }
 
-async function route(req: Request, url: URL, deps: ServerDeps): Promise<Response> {
+/**
+ * Per-route required scope. Two routes are scope-gated:
+ *   - `/v1/audio/transcriptions` → `scribe:transcribe`
+ *   - `/.parachute/config*`      → `scribe:admin` (per the canonical rule:
+ *                                   "<service>:admin gates /.parachute/config*")
+ *
+ * Returns null when no scope check applies (exempt routes, /v1/models, etc.).
+ */
+function requiredScopeFor(pathname: string, method: string): string | null {
+  if (pathname === "/v1/audio/transcriptions" && method === "POST") return SCOPE_TRANSCRIBE;
+  if (pathname.startsWith("/.parachute/config")) return SCOPE_ADMIN;
+  if (pathname === "/v1/models") return SCOPE_TRANSCRIBE;
+  return null;
+}
+
+async function route(
+  req: Request,
+  url: URL,
+  scopes: readonly string[],
+  deps: ServerDeps,
+): Promise<Response> {
+  const required = requiredScopeFor(url.pathname, req.method);
+  if (required && !hasScope(scopes, required)) {
+    return insufficientScopeResponse(required, scopes);
+  }
+
   if (url.pathname.startsWith("/.parachute/")) {
     if (req.method !== "GET") {
       return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -144,7 +176,7 @@ export async function startServer() {
   console.log(`scribe listening on :${PORT}`);
   console.log(`  transcribe: ${TRANSCRIBE}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
-  console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN)" : "open"}`);
+  console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN or hub JWT)" : "open"}`);
 
   const handler = createFetchHandler({
     transcribe,
