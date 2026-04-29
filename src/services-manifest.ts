@@ -10,6 +10,12 @@ export interface ServiceEntry {
   version: string;
   displayName?: string;
   tagline?: string;
+  /**
+   * Hub-stamped fields (e.g. `installDir` from parachute-hub#84) ride on the
+   * row even though scribe itself never sets them. We merge rather than
+   * replace on upsert so they survive scribe's self-registration writes.
+   */
+  [key: string]: unknown;
 }
 
 interface ServicesManifest {
@@ -37,7 +43,11 @@ export function upsertService(
   mkdirSync(dirname(path), { recursive: true });
   const manifest = readManifest(path);
   const idx = manifest.services.findIndex((s) => s.name === entry.name);
-  if (idx >= 0) manifest.services[idx] = entry;
+  // Merge rather than replace so fields the hub stamps onto the row
+  // (`installDir` from parachute-hub#84, etc.) survive a self-registration
+  // pass. Scribe still wins for the fields it owns — port, paths, version,
+  // health — because they spread last.
+  if (idx >= 0) manifest.services[idx] = { ...manifest.services[idx], ...entry };
   else manifest.services.push(entry);
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`);
