@@ -10,6 +10,7 @@ import {
   isAuthRequired,
   unauthorizedResponse,
   validateToken,
+  warnIfTokenLooksJwt,
 } from "./auth.ts";
 
 describe("auth", () => {
@@ -201,6 +202,40 @@ describe("auth", () => {
       expect(res.status).toBe(401);
       const body = (await res.json()) as { message: string };
       expect(body.message).toContain("hub JWT verification failed");
+    });
+  });
+
+  describe("warnIfTokenLooksJwt", () => {
+    let warnings: string[];
+    let originalWarn: typeof console.warn;
+
+    beforeEach(() => {
+      warnings = [];
+      originalWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map((a) => String(a)).join(" "));
+      };
+    });
+
+    afterEach(() => {
+      console.warn = originalWarn;
+    });
+
+    test("warns when SCRIBE_AUTH_TOKEN starts with eyJ (JWT-shape)", () => {
+      process.env.SCRIBE_AUTH_TOKEN = "eyJhbGciOiJSUzI1NiJ9.payload.sig";
+      warnIfTokenLooksJwt();
+      expect(warnings.some((w) => w.includes("JWT-shaped"))).toBe(true);
+    });
+
+    test("silent when SCRIBE_AUTH_TOKEN is opaque", () => {
+      process.env.SCRIBE_AUTH_TOKEN = "s3cret-opaque-value";
+      warnIfTokenLooksJwt();
+      expect(warnings).toHaveLength(0);
+    });
+
+    test("silent when SCRIBE_AUTH_TOKEN is unset (open mode)", () => {
+      warnIfTokenLooksJwt();
+      expect(warnings).toHaveLength(0);
     });
   });
 

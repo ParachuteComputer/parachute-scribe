@@ -1,5 +1,5 @@
 {
-  "name": "parachute-scribe",
+  "name": "scribe",
   "manifestName": "parachute-scribe",
   "displayName": "Scribe",
   "tagline": "Audio transcription (Whisper-compatible API + LLM cleanup)",

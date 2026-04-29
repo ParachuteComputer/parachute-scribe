@@ -24,6 +24,7 @@ import {
   hasScope,
   insufficientScopeResponse,
   isAuthRequired,
+  warnIfTokenLooksJwt,
 } from "./auth.ts";
 import pkg from "../package.json" with { type: "json" };
 
@@ -177,6 +178,7 @@ export async function startServer() {
   console.log(`  transcribe: ${TRANSCRIBE}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
   console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN or hub JWT)" : "open"}`);
+  warnIfTokenLooksJwt();
 
   const handler = createFetchHandler({
     transcribe,

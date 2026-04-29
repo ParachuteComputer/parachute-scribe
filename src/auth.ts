@@ -72,6 +72,26 @@ export function isAuthRequired(): boolean {
   return Boolean(process.env.SCRIBE_AUTH_TOKEN);
 }
 
+/**
+ * Operator footgun guard. The shared-secret compare in `validateToken` runs
+ * AFTER the JWT-shape branch — so if SCRIBE_AUTH_TOKEN itself starts with
+ * `eyJ` (the base64 prefix of a JWT header), inbound bearers matching that
+ * value get routed into JWKS verification and fail with `jwt-invalid` rather
+ * than ever reaching the shared-secret compare. Warn loudly at startup so
+ * the operator notices before clients start 401-ing.
+ */
+export function warnIfTokenLooksJwt(): void {
+  const token = process.env.SCRIBE_AUTH_TOKEN;
+  if (token && looksLikeJwt(token)) {
+    console.warn(
+      "[scribe] SCRIBE_AUTH_TOKEN looks JWT-shaped (eyJ… prefix). " +
+        "Inbound bearers matching this value will be routed to hub JWKS verification " +
+        "instead of shared-secret compare and will likely 401. " +
+        "Pick an opaque value (e.g. `openssl rand -hex 32`).",
+    );
+  }
+}
+
 export function unauthorizedResponse(reason?: string): Response {
   return Response.json(
     { error: "unauthorized", message: reason ?? "SCRIBE_AUTH_TOKEN required" },
