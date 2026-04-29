@@ -1,0 +1,14 @@
+{
+  "name": "parachute-scribe",
+  "manifestName": "parachute-scribe",
+  "displayName": "Scribe",
+  "tagline": "Audio transcription (Whisper-compatible API + LLM cleanup)",
+  "kind": "api",
+  "port": 1943,
+  "paths": ["/scribe"],
+  "health": "/health",
+  "startCmd": ["parachute-scribe", "serve"],
+  "scopes": {
+    "defines": ["scribe:transcribe", "scribe:admin"]
+  }
+}
