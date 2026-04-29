@@ -18,6 +18,8 @@
  * "valid? what scopes?", not "does this scope satisfy this route?".
  */
 
+import { Buffer } from "node:buffer";
+import { timingSafeEqual } from "node:crypto";
 import { HubJwtError, looksLikeJwt, validateHubJwt } from "./hub-jwt.ts";
 
 export const SCOPE_TRANSCRIBE = "scribe:transcribe" as const;
@@ -64,8 +66,25 @@ export async function validateToken(token: string | undefined): Promise<AuthResu
     }
   }
 
-  if (token !== required) return { valid: false, reason: "token-mismatch" };
+  if (!constantTimeStringEqual(token, required)) {
+    return { valid: false, reason: "token-mismatch" };
+  }
   return { valid: true, scopes: FULL_SCOPES, mode: "shared-secret" };
+}
+
+/**
+ * Constant-time string compare for the shared-secret path. The risk on a
+ * loopback-only deployment is negligible (an attacker with same-host access
+ * has bigger problems), but timing-safe is the standard hygiene for any
+ * secret compare. `timingSafeEqual` requires equal-length buffers; the
+ * length pre-check leaks length only — the secret length is fixed per
+ * deployment, not the secret itself, so this is fine.
+ */
+export function constantTimeStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 export function isAuthRequired(): boolean {

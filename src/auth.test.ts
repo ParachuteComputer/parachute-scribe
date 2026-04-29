@@ -3,6 +3,7 @@ import {
   AUTH_EXEMPT_PATHS,
   SCOPE_ADMIN,
   SCOPE_TRANSCRIBE,
+  constantTimeStringEqual,
   enforceAuth,
   extractBearer,
   hasScope,
@@ -202,6 +203,31 @@ describe("auth", () => {
       expect(res.status).toBe(401);
       const body = (await res.json()) as { message: string };
       expect(body.message).toContain("hub JWT verification failed");
+    });
+  });
+
+  describe("constantTimeStringEqual", () => {
+    test("returns true for equal strings", () => {
+      expect(constantTimeStringEqual("s3cret", "s3cret")).toBe(true);
+    });
+
+    test("returns false for different same-length strings", () => {
+      expect(constantTimeStringEqual("abcdef", "abcxyz")).toBe(false);
+    });
+
+    test("returns false for different-length strings (no throw)", () => {
+      expect(constantTimeStringEqual("short", "much-longer-secret")).toBe(false);
+      expect(constantTimeStringEqual("much-longer-secret", "short")).toBe(false);
+    });
+
+    test("handles empty strings", () => {
+      expect(constantTimeStringEqual("", "")).toBe(true);
+      expect(constantTimeStringEqual("", "x")).toBe(false);
+    });
+
+    test("handles multibyte utf-8 (compares bytes, not codepoints)", () => {
+      expect(constantTimeStringEqual("café", "café")).toBe(true);
+      expect(constantTimeStringEqual("café", "cafe")).toBe(false);
     });
   });
 
