@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { buildProperNounsBlockFromEntries, parseContextPayload } from "./context.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  MAX_NAME_LEN,
+  MAX_PAYLOAD_BYTES,
+  buildProperNounsBlockFromEntries,
+  parseContextPayload,
+} from "./context.ts";
 
 describe("parseContextPayload", () => {
   test("accepts raw JSON string and returns the payload", () => {
@@ -42,6 +47,57 @@ describe("parseContextPayload", () => {
   test("returns empty entries array for empty input (valid, just no context)", () => {
     const payload = parseContextPayload({ entries: [] });
     expect(payload!.entries).toEqual([]);
+  });
+});
+
+describe("parseContextPayload — DoS caps (scribe#27)", () => {
+  let warnings: string[];
+  let originalWarn: typeof console.warn;
+
+  beforeEach(() => {
+    warnings = [];
+    originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+  });
+
+  afterEach(() => {
+    console.warn = originalWarn;
+  });
+
+  test("rejects raw-string payload over MAX_PAYLOAD_BYTES (returns null + warns)", () => {
+    const big = `{"entries":[{"name":"${"x".repeat(MAX_PAYLOAD_BYTES + 100)}"}]}`;
+    expect(parseContextPayload(big)).toBeNull();
+    expect(warnings.some((w) => w.includes("context payload rejected") && w.includes("cap"))).toBe(true);
+  });
+
+  test("drops entries whose name exceeds MAX_NAME_LEN (keeps the rest, warns with count)", () => {
+    const oversize = "n".repeat(MAX_NAME_LEN + 1);
+    const payload = parseContextPayload({
+      entries: [
+        { name: "Keep" },
+        { name: oversize, summary: "should be dropped" },
+        { name: "AlsoKeep" },
+        { name: oversize, aliases: ["x"] },
+      ],
+    });
+    expect(payload!.entries.map((e) => e.name)).toEqual(["Keep", "AlsoKeep"]);
+    expect(warnings.some((w) => w.includes("context entries dropped") && w.includes("2"))).toBe(true);
+  });
+
+  test("name at exactly MAX_NAME_LEN is kept; one over is dropped", () => {
+    const exact = "a".repeat(MAX_NAME_LEN);
+    const over = "b".repeat(MAX_NAME_LEN + 1);
+    const payload = parseContextPayload({
+      entries: [{ name: exact }, { name: over }],
+    });
+    expect(payload!.entries.map((e) => e.name)).toEqual([exact]);
+  });
+
+  test("does not warn when no entries are dropped", () => {
+    parseContextPayload({ entries: [{ name: "small" }] });
+    expect(warnings.filter((w) => w.includes("context entries dropped"))).toHaveLength(0);
   });
 });
 
