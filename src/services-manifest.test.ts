@@ -76,6 +76,32 @@ describe("services-manifest", () => {
     expect(() => upsertService(SCRIBE_ENTRY, path)).toThrow();
   });
 
+  test("preserves hub-stamped fields on the row (e.g. installDir from parachute-hub#84)", () => {
+    // Hub stamps `installDir` onto the row at install time. Scribe's self-
+    // registration row shape doesn't know about that field, but the upsert
+    // must merge rather than replace so the hub-stamped value survives the
+    // second write — otherwise `parachute start scribe` after an auto-start
+    // round-trip can't resolve installDir → "unknown service".
+    writeFileSync(
+      path,
+      JSON.stringify({
+        services: [
+          {
+            ...SCRIBE_ENTRY,
+            installDir: "/Users/test/.parachute/scribe",
+          },
+        ],
+      }),
+    );
+    upsertService({ ...SCRIBE_ENTRY, version: "0.5.0" }, path);
+    const got = JSON.parse(readFileSync(path, "utf8")) as {
+      services: { version: string; installDir?: string }[];
+    };
+    expect(got.services).toHaveLength(1);
+    expect(got.services[0]!.version).toBe("0.5.0");
+    expect(got.services[0]!.installDir).toBe("/Users/test/.parachute/scribe");
+  });
+
   test("resolveManifestPath honors PARACHUTE_HOME", () => {
     const orig = process.env.PARACHUTE_HOME;
     process.env.PARACHUTE_HOME = "/opt/parachute";
