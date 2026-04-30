@@ -5,7 +5,7 @@
     "": {
       "name": "parachute-scribe",
       "dependencies": {
-        "jose": "^6.2.2",
+        "@openparachute/scope-guard": "^0.1.0-rc.1",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -17,6 +17,8 @@
     },
   },
   "packages": {
+    "@openparachute/scope-guard": ["@openparachute/scope-guard@0.1.0-rc.1", "", { "dependencies": { "jose": "^6.2.2" }, "peerDependencies": { "typescript": "^5" } }, "sha512-SRRzBmbbf4uWP0nKYLFg6Fasna2zl+BtADedCeQgCoHxmdwE8JaE3y5USZLLNaU5YJ9tzItXhWOsLtTFgJHgtQ=="],
+
     "@types/bun": ["@types/bun@1.3.11", "", { "dependencies": { "bun-types": "1.3.11" } }, "sha512-5vPne5QvtpjGpsGYXiFyycfpDF2ECyPcTSsFBMa0fraoxiQyMJ3SmuQIGhzPg2WJuWxVBoxWJ2kClYTcw/4fAg=="],
 
     "@types/node": ["@types/node@25.5.0", "", { "dependencies": { "undici-types": "~7.18.0" } }, "sha512-jp2P3tQMSxWugkCUKLRPVUpGaL5MVFwF8RDuSRztfwgN1wmqJeMSbKlnEtQqU8UrhTmzEmZdu2I6v2dpp7XIxw=="],

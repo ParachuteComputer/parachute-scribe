@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "jose": "^6.2.2"
+    "@openparachute/scope-guard": "^0.1.0-rc.1"
   },
   "devDependencies": {
     "@types/bun": "latest",
