@@ -1,86 +1,73 @@
 /**
- * Hub-issued JWT validation for scribe.
+ * Hub-issued JWT validation. Scribe as resource server: trusts tokens that the
+ * hub signs against keys we fetch from the hub's `/.well-known/jwks.json`.
  *
- * Mirrors `parachute-vault/src/hub-jwt.ts` (the canonical implementation) with
- * scribe's narrower needs:
- *   - No per-resource audience binding — scribe is a single endpoint, not
- *     a multi-vault dispatcher. We accept any aud claim.
- *   - Only the `scope` claim is surfaced; downstream is `scribe:transcribe`
- *     vs `scribe:admin` exact-match enforcement.
+ * The trust kernel — JWKS fetch + verify, issuer pin, RFC 7519 string-or-array
+ * `aud` handling — lives in the shared `@openparachute/scope-guard` library
+ * so vault, scribe, and paraclaw can't silently drift on the worst place to
+ * drift. This file is the scribe-side adapter: hub-origin resolution
+ * (env-var precedence + loopback fallback), a process-wide guard instance,
+ * and re-exports preserving the public surface every existing call site
+ * already imports.
  *
- * Trust pin: `iss` MUST equal the configured hub origin. Without that check,
- * a token signed by any RSA key would pass.
+ * Scribe is a single endpoint, not a multi-resource dispatcher — we don't pass
+ * `expectedAudience`. The lib's claim shape is richer than what scribe's
+ * callers historically used (it surfaces `aud`, `jti`, `clientId` in addition
+ * to `sub`/`scopes`). That's additive — `auth.ts` only consumes `scopes`.
+ *
+ * Scope-guard adoption: Step 3 of 4 (after vault, before paraclaw).
  */
-import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
+import {
+  createScopeGuard,
+  HubJwtError,
+  type HubJwtClaims,
+  looksLikeJwt,
+} from "@openparachute/scope-guard";
 
 const DEFAULT_HUB_LOOPBACK = "http://127.0.0.1:1939";
 
+/**
+ * Resolve the hub origin used to fetch JWKS and validate `iss`. Strips a
+ * trailing slash so we get a single canonical form.
+ *
+ * Order: env var → loopback fallback. We deliberately don't read
+ * `~/.parachute/services.json` — the hub is the dispatcher, not a registered
+ * service in that file. If a deployment exposes the hub on a non-default
+ * origin, the env var is the contract.
+ */
 export function getHubOrigin(): string {
   const env = process.env.PARACHUTE_HUB_ORIGIN?.replace(/\/$/, "");
   if (env && env.length > 0) return env;
   return DEFAULT_HUB_LOOPBACK;
 }
 
+// Process-wide guard. The resolver form lets tests flip
+// `PARACHUTE_HUB_ORIGIN` between cases — the lib re-resolves on every
+// `validateHubJwt` and `resetJwksCache` call so the env-var change picks up
+// without a server restart. JWKS cache (5min/30s defaults) lives inside the
+// guard, shared across requests.
+const guard = createScopeGuard({ hubOrigin: () => getHubOrigin() });
+
 /**
- * A presented bearer token is JWT-shaped iff it begins with `eyJ` — the
- * base64url encoding of `{"` from a `{"alg":...}` JSON header. Cheap
- * pre-check so non-JWT tokens (the SCRIBE_AUTH_TOKEN shared secret) skip
- * JWKS verification entirely.
+ * Verify a presented JWT against the hub's JWKS. Throws `HubJwtError` on any
+ * failure (bad signature, wrong issuer, expired, missing kid, JWKS
+ * unreachable). On success returns the surfaced claims plus the parsed
+ * scope list.
+ *
+ * Trust pin: `iss` MUST equal the configured hub origin. Without that check,
+ * a token signed by any RSA key would pass verification.
  */
-export function looksLikeJwt(token: string): boolean {
-  return token.startsWith("eyJ");
-}
-
-export interface HubJwtClaims {
-  sub: string;
-  scopes: string[];
-}
-
-export class HubJwtError extends Error {
-  override name = "HubJwtError";
-}
-
-type JwksGetter = ReturnType<typeof createRemoteJWKSet>;
-let cachedGetter: JwksGetter | null = null;
-let cachedOrigin: string | null = null;
-
-function getJwksGetter(origin: string): JwksGetter {
-  if (cachedGetter && cachedOrigin === origin) return cachedGetter;
-  cachedGetter = createRemoteJWKSet(new URL(`${origin}/.well-known/jwks.json`), {
-    cacheMaxAge: 5 * 60 * 1000,
-    cooldownDuration: 30 * 1000,
-  });
-  cachedOrigin = origin;
-  return cachedGetter;
-}
-
-export function resetJwksCache(): void {
-  cachedGetter = null;
-  cachedOrigin = null;
-}
-
 export async function validateHubJwt(token: string): Promise<HubJwtClaims> {
-  const origin = getHubOrigin();
-  const getter = getJwksGetter(origin);
-
-  let payload: JWTPayload;
-  try {
-    const verified = await jwtVerify(token, getter, { issuer: origin });
-    payload = verified.payload;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new HubJwtError(`hub JWT verification failed: ${msg}`);
-  }
-
-  if (typeof payload.sub !== "string" || payload.sub.length === 0) {
-    throw new HubJwtError("hub JWT missing required `sub` claim");
-  }
-
-  const scopeRaw = (payload as { scope?: unknown }).scope;
-  const scopes =
-    typeof scopeRaw === "string"
-      ? scopeRaw.split(/\s+/).map((s) => s.trim()).filter(Boolean)
-      : [];
-
-  return { sub: payload.sub, scopes };
+  return guard.validateHubJwt(token);
 }
+
+/**
+ * Reset the cached JWKS getter. Tests use this to switch origins between
+ * cases; production callers shouldn't need it (origin is process-stable).
+ */
+export function resetJwksCache(): void {
+  guard.resetJwksCache();
+}
+
+export { HubJwtError, looksLikeJwt };
+export type { HubJwtClaims };
