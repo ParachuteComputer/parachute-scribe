@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (2026-05-04)
+## 0.4.0 (2026-05-05)
 
 First @latest release since 0.3.0. Hardens auth, adopts the shared scope-guard kernel, and ships module-protocol conformance.
 
