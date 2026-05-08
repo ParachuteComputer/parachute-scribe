@@ -1,6 +1,6 @@
 {
   "name": "@openparachute/scribe",
-  "version": "0.4.0",
+  "version": "0.4.1-rc.1",
   "description": "Audio transcription + LLM cleanup. Whisper-compatible API for Parachute.",
   "module": "src/index.ts",
   "type": "module",
