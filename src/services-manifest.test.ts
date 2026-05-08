@@ -2,7 +2,12 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveManifestPath, upsertService, type ServiceEntry } from "./services-manifest.ts";
+import {
+  readServiceEntry,
+  resolveManifestPath,
+  upsertService,
+  type ServiceEntry,
+} from "./services-manifest.ts";
 
 const SCRIBE_ENTRY: ServiceEntry = {
   name: "parachute-scribe",
@@ -100,6 +105,51 @@ describe("services-manifest", () => {
     expect(got.services).toHaveLength(1);
     expect(got.services[0]!.version).toBe("0.5.0");
     expect(got.services[0]!.installDir).toBe("/Users/test/.parachute/scribe");
+  });
+
+  describe("readServiceEntry (scribe#40)", () => {
+    test("returns undefined when manifest does not exist", () => {
+      expect(readServiceEntry("parachute-scribe", path)).toBeUndefined();
+    });
+
+    test("returns undefined when manifest exists but lacks an entry for `name`", () => {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          services: [
+            { name: "parachute-vault", port: 1940, paths: ["/"], health: "/health", version: "1.0.0" },
+          ],
+        }),
+      );
+      expect(readServiceEntry("parachute-scribe", path)).toBeUndefined();
+    });
+
+    test("returns the entry when present (operator-set port survives boot)", () => {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          services: [{ ...SCRIBE_ENTRY, port: 1947 }],
+        }),
+      );
+      const got = readServiceEntry("parachute-scribe", path);
+      expect(got?.port).toBe(1947);
+      expect(got?.name).toBe("parachute-scribe");
+    });
+
+    test("throws on malformed manifest (caller decides whether to recover)", () => {
+      writeFileSync(path, "not json at all");
+      expect(() => readServiceEntry("parachute-scribe", path)).toThrow();
+    });
+
+    test("returns undefined for a non-matching name in an otherwise valid manifest", () => {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          services: [SCRIBE_ENTRY],
+        }),
+      );
+      expect(readServiceEntry("parachute-other", path)).toBeUndefined();
+    });
   });
 
   test("resolveManifestPath honors PARACHUTE_HOME", () => {

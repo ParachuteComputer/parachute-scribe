@@ -3,8 +3,8 @@ import { loadConfig, type ScribeConfig } from "./config.ts";
 import { buildProperNounsBlockFromEntries, parseContextPayload } from "./context.ts";
 import { preflight, withCors } from "./cors.ts";
 import { upsertService } from "./services-manifest.ts";
+import { resolvePort } from "./port-resolve.ts";
 import {
-  DEFAULT_PORT,
   DISPLAY_NAME,
   MOUNT_PATH,
   SERVICE_NAME,
@@ -159,7 +159,10 @@ export async function startServer() {
 
   const TRANSCRIBE = config.transcribe?.provider ?? process.env.TRANSCRIBE_PROVIDER ?? "parakeet-mlx";
   const CLEANUP = config.cleanup?.provider ?? process.env.CLEANUP_PROVIDER ?? "none";
-  const PORT = Number(process.env.SCRIBE_PORT ?? process.env.PORT ?? DEFAULT_PORT);
+  // Port resolution: services.json wins, then env, then canonical default.
+  // See `port-resolve.ts` and scribe#40 for the precedence rationale.
+  const portResolution = resolvePort();
+  const PORT = portResolution.port;
   const CLEANUP_DEFAULT = config.cleanup?.default ?? true;
 
   const transcribe = getProvider(transcribers, TRANSCRIBE, "transcription");
@@ -174,7 +177,7 @@ export async function startServer() {
     port: PORT,
   };
 
-  console.log(`scribe listening on :${PORT}`);
+  console.log(`scribe listening on :${PORT} (port source: ${portResolution.source})`);
   console.log(`  transcribe: ${TRANSCRIBE}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
   console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN or hub JWT)" : "open"}`);
@@ -187,11 +190,26 @@ export async function startServer() {
     scribeConfig: config,
   });
 
-  Bun.serve({
-    hostname: "0.0.0.0",
-    port: PORT,
-    fetch: handler,
-  });
+  // Fail-loud on bind: if PORT is in use we want a named, actionable error
+  // rather than a silent "address in use" deep inside Bun. The hub probes
+  // `/health` after spawn, so an unbound scribe surfaces as "service didn't
+  // come up" — which is hard to debug without this hint.
+  try {
+    Bun.serve({
+      hostname: "0.0.0.0",
+      port: PORT,
+      fetch: handler,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `scribe: failed to bind port ${PORT} (source: ${portResolution.source}): ${message}\n` +
+        `  another process is already listening on :${PORT}.\n` +
+        `  if this is unexpected, check ~/.parachute/services.json for a stale entry,\n` +
+        `  or run \`parachute status\` / \`lsof -iTCP:${PORT} -sTCP:LISTEN\` to identify the conflict.`,
+    );
+    throw err;
+  }
 
   try {
     upsertService({

@@ -36,6 +36,24 @@ function readManifest(path: string): ServicesManifest {
   return raw as ServicesManifest;
 }
 
+/**
+ * Look up the existing entry for a service by name. Returns `undefined` when
+ * the manifest doesn't exist yet or doesn't contain an entry for `name`.
+ *
+ * Used at boot so scribe binds the port the operator (or hub) recorded in
+ * services.json, instead of overwriting it with a hardcoded default. See
+ * scribe#40 — in v0.4.0 scribe ignored services.json on boot and always
+ * stamped the env-derived `PORT`, which silently rewrote a canonical 1943
+ * entry to 1944 (the unassigned slot agent picks).
+ */
+export function readServiceEntry(
+  name: string,
+  path: string = resolveManifestPath(),
+): ServiceEntry | undefined {
+  const manifest = readManifest(path);
+  return manifest.services.find((s) => s.name === name);
+}
+
 export function upsertService(
   entry: ServiceEntry,
   path: string = resolveManifestPath(),
