@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.2-rc.1] - 2026-05-10
+
+### Added
+- **`@openparachute/scope-guard` 0.2.0 adoption — hub revocation list now enforced (hub#212 Phase 4).** Hub-issued JWTs are consulted against the hub's `/.well-known/parachute-revocation.json` after sig/iss/aud/expiry pass; revoked jtis surface as `HubJwtError(code: "revoked")` and are rejected at `validateToken` with a 401. Without this bump, operator revocation via the hub mint API was a no-op against scribe.
+- **`resetRevocationCache`** re-export from `src/hub-jwt.ts` (mirrors `resetJwksCache`) so tests can start cases from a clean fail-closed state.
+- **`src/auth-hub-jwt.test.ts`** — integration suite for the hub-JWT path. Pins: happy-path acceptance with active revocations on unrelated jtis, sanitized 401 + jti-bearing audit log on revoked rejection, sanitized 401 + implementation-detail-bearing audit log on cold-start revocation-endpoint outage. scope-guard's own unit suite covers cache mechanics; this file pins scribe-side wire-up.
+
+### Changed
+- **Sanitized client-facing 401 messages on revocation outcomes.** `code: "revoked"` returns `"token has been revoked"` (no jti); `code: "revocation_unavailable"` returns `"token cannot be validated: revocation list unavailable"` (no "no last-good cache" implementation detail). Full diagnostics — including the jti and the cache-state phrasing — route to `console.warn` for the operator audit trail. Inheritable pattern from vault PR #281; agent inherits next.
+
+### Notes
+- 133/133 tests passing (`bun test src/`); typecheck clean.
+- Behavior summary from scope-guard 0.2.0: 60s TTL on the revocation cache (matches hub's published `Cache-Control: max-age=60`); fail-open with last-good cache during a hub outage; fail-closed only on first-fetch-failure (cold start, no last-good).
+- Shared-secret + open-mode paths untouched. Existing JWT-shape rejection tests in `auth.test.ts` continue to pass — non-revocation `HubJwtError` codes (signature, audience, expired, etc.) still forward their messages verbatim.
+
 ## [0.4.1] - 2026-05-09
 
 ### Fixed

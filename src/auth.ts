@@ -61,6 +61,26 @@ export async function validateToken(token: string | undefined): Promise<AuthResu
       const claims = await validateHubJwt(token);
       return { valid: true, scopes: claims.scopes, mode: "hub-jwt" };
     } catch (err) {
+      // Revocation-related codes get sanitized client messages: server-side
+      // audit log carries the full diagnostic (jti for `revoked`,
+      // implementation-detail phrasing for `revocation_unavailable`); the
+      // unauthenticated caller gets a code-shaped sentence with no internals.
+      // Inheritable pattern across vault/scribe/agent — all revocation-related
+      // codes get sanitized client messages, full detail lives in server-side
+      // audit logs. Other HubJwtError codes (signature, audience, expired,
+      // etc.) carry generic messages and are forwarded as-is.
+      if (err instanceof HubJwtError && err.code === "revoked") {
+        console.warn(`[scribe-auth] hub JWT rejected: ${err.message}`);
+        return { valid: false, reason: "jwt-invalid", message: "token has been revoked" };
+      }
+      if (err instanceof HubJwtError && err.code === "revocation_unavailable") {
+        console.warn(`[scribe-auth] hub JWT rejected: ${err.message}`);
+        return {
+          valid: false,
+          reason: "jwt-invalid",
+          message: "token cannot be validated: revocation list unavailable",
+        };
+      }
       const message = err instanceof HubJwtError ? err.message : err instanceof Error ? err.message : "JWT validation failed";
       return { valid: false, reason: "jwt-invalid", message };
     }
