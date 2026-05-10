@@ -14,8 +14,6 @@
  * `expectedAudience`. The lib's claim shape is richer than what scribe's
  * callers historically used (it surfaces `aud`, `jti`, `clientId` in addition
  * to `sub`/`scopes`). That's additive — `auth.ts` only consumes `scopes`.
- *
- * Scope-guard adoption: Step 3 of 4 (after vault, before paraclaw).
  */
 import {
   createScopeGuard,
@@ -67,6 +65,15 @@ export async function validateHubJwt(token: string): Promise<HubJwtClaims> {
  */
 export function resetJwksCache(): void {
   guard.resetJwksCache();
+}
+
+/**
+ * Reset the cached revocation list. Tests use this to start from a clean
+ * fail-closed state between cases; production callers shouldn't need it
+ * (the cache refreshes itself on TTL expiry).
+ */
+export function resetRevocationCache(): void {
+  guard.resetRevocationCache();
 }
 
 export { HubJwtError, looksLikeJwt };
