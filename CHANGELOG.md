@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.2-rc.1] - 2026-05-10
+## [0.4.2] - 2026-05-10
 
 ### Added
 - **`@openparachute/scope-guard` 0.2.0 adoption — hub revocation list now enforced (hub#212 Phase 4).** Hub-issued JWTs are consulted against the hub's `/.well-known/parachute-revocation.json` after sig/iss/aud/expiry pass; revoked jtis surface as `HubJwtError(code: "revoked")` and are rejected at `validateToken` with a 401. Without this bump, operator revocation via the hub mint API was a no-op against scribe.
