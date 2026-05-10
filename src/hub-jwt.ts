@@ -14,8 +14,6 @@
  * `expectedAudience`. The lib's claim shape is richer than what scribe's
  * callers historically used (it surfaces `aud`, `jti`, `clientId` in addition
  * to `sub`/`scopes`). That's additive — `auth.ts` only consumes `scopes`.
- *
- * Scope-guard adoption: Step 3 of 4 (after vault, before paraclaw).
  */
 import {
   createScopeGuard,
