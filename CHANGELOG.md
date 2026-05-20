@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.3-rc.1] - 2026-05-20
+
+### Added
+- **Config UI: `PUT /.parachute/config` and a static admin form at `/scribe/admin`** — PR-A of the scribe config UI work. Operators can now read and write `~/.parachute/scribe/config.json` from a browser (through hub's reverse proxy) rather than hand-editing JSON.
+  - `PUT /.parachute/config` accepts the same camelCase wire shape `GET /.parachute/config` returns, validates against the JSON Schema, and atomically writes the nested file shape to `~/.parachute/scribe/config.json` (tmp + rename — same pattern as `services-manifest.ts`). Scoped on `scribe:admin`.
+  - Response carries `{ ok: true, restart_required: [...] }` — the array lists which fields changed in a way that needs a process restart to take effect (provider changes + port). Cleanup-prompt and cleanup-default changes take effect immediately because they're read dynamically per-request; the handler updates the in-process `scribeConfig.cleanup` block to match the new file.
+  - `/scribe/admin` is a single self-contained HTML page (inline CSS + vanilla JS, no framework, no build step) that fetches schema + config on load, renders one form field per knob, and displays the restart-required list inline after save. Mirrors the "render a self-contained string from a TS function" pattern in `parachute-hub/src/oauth-ui.ts`.
+- **`src/config-write.ts`** — schema validator (tiny purpose-built draft-07; no external dep), wire→file translator, restart-required differ, atomic writer.
+- **`src/admin-ui.ts`** — `renderAdminPage()` returns the static HTML.
+
+### Notes
+- 180/180 tests passing (`bun test src/`); typecheck clean.
+- PR-A only: no secrets management (PR-B) and no hub-side "Configure" link in the admin SPA (PR-C).
+- `port` is in the schema for visibility but not written to disk — scribe's port resolution (`port-resolve.ts`) reads from services.json and env, not config.json. A port change in the form still appears in `restart_required` so the operator knows to update the env/services.json side too.
+
 ## [0.4.2] - 2026-05-10
 
 ### Added
