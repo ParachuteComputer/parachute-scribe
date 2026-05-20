@@ -1,6 +1,7 @@
 /**
- * PUT /.parachute/config support — JSON-Schema validation, atomic write of
- * `~/.parachute/scribe/config.json`, and a small restart-required diff.
+ * PUT /.parachute/config support — JSON-Schema validation, read-modify-write
+ * merge into `~/.parachute/scribe/config.json`, and a small restart-required
+ * diff.
  *
  * Wire shape:
  *   - PUT body is the camelCase shape that GET /.parachute/config returns
@@ -9,6 +10,16 @@
  *     It mirrors the JSON Schema served at `/.parachute/config/schema`.
  *   - File shape on disk is the nested `ScribeConfig` (`transcribe.provider`,
  *     `cleanup.provider`, …) — `toFileShape` translates wire→file before write.
+ *
+ * Null-as-clear semantics (scribe#45 review must-fix 1):
+ *   - For the two optional string fields (`cleanupSystemPrompt`,
+ *     `cleanupContextTemplate`) an explicit `null` on the wire means "clear
+ *     this field" — the user emptied the form textarea. We surface that to
+ *     the merger as a sentinel and the merger drops the key from the
+ *     merged-on-disk shape. Without this read-modify-write step, an
+ *     "absent in `toFileShape` output" key was silently treated as
+ *     "leave it alone," which meant the operator could "save" an empty
+ *     textarea and the old value would persist unchanged on disk.
  *
  * Validation: a tiny purpose-built draft-07 validator that handles the schema
  * shapes we actually emit (`type: object` + `properties` of `string/integer/
@@ -23,7 +34,7 @@
  * `handleTranscription`, so they take effect on the next call.
  */
 
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { buildConfigSchema } from "./config-schema.ts";
 import type { ResolvedConfig } from "./config-schema.ts";
@@ -161,21 +172,26 @@ function validateField(
 }
 
 /**
- * Translate wire-shape (camelCase, flat) → file-shape (nested `transcribe.*`,
- * `cleanup.*`). The file shape stays the source of truth on disk; the wire
- * shape mirrors the resolved-config / schema surface.
+ * Translate wire-shape (camelCase, flat) → file-shape patch (nested
+ * `transcribe.*`, `cleanup.*`).
+ *
+ * Output is a *patch*, not a replacement: only fields explicitly present in
+ * `wire` appear in the result. Absent fields are absent from the patch and
+ * survive whatever's already on disk. Explicit `null` for the two clearable
+ * string fields is preserved as a sentinel so `mergeIntoFileShape` can drop
+ * the key during the read-modify-write step.
  *
  * `port` is intentionally NOT written into the file: scribe's port resolution
  * (port-resolve.ts) reads from `services.json` and env, not config.json. The
  * schema lists it for visibility / documentation in the SPA but writing it
  * here would just create a dead-letter knob.
  */
-export function toFileShape(wire: ConfigWire): ScribeConfig {
-  const file: ScribeConfig = {};
+export function toFileShape(wire: ConfigWire): FileShapePatch {
+  const file: FileShapePatch = {};
   if (wire.transcribeProvider !== undefined) {
     file.transcribe = { provider: wire.transcribeProvider };
   }
-  const cleanup: NonNullable<ScribeConfig["cleanup"]> = {};
+  const cleanup: CleanupPatch = {};
   let cleanupTouched = false;
   if (wire.cleanupProvider !== undefined) {
     cleanup.provider = wire.cleanupProvider;
@@ -185,16 +201,122 @@ export function toFileShape(wire: ConfigWire): ScribeConfig {
     cleanup.default = wire.cleanupDefault;
     cleanupTouched = true;
   }
-  if (wire.cleanupSystemPrompt !== undefined && wire.cleanupSystemPrompt !== null) {
+  if (wire.cleanupSystemPrompt !== undefined) {
+    // Preserve explicit null — it's the "clear this field" sentinel.
     cleanup.system_prompt = wire.cleanupSystemPrompt;
     cleanupTouched = true;
   }
-  if (wire.cleanupContextTemplate !== undefined && wire.cleanupContextTemplate !== null) {
+  if (wire.cleanupContextTemplate !== undefined) {
     cleanup.context_template = wire.cleanupContextTemplate;
     cleanupTouched = true;
   }
   if (cleanupTouched) file.cleanup = cleanup;
   return file;
+}
+
+/**
+ * Patch shape produced by `toFileShape`. Same nested structure as
+ * `ScribeConfig` but each cleanup field is optional + nullable: presence
+ * means "set this", `null` means "clear this", absence means "leave alone".
+ */
+export type CleanupPatch = {
+  provider?: string;
+  model?: string;
+  default?: boolean;
+  system_prompt?: string | null;
+  context_template?: string | null;
+};
+
+export type FileShapePatch = {
+  transcribe?: { provider?: string };
+  cleanup?: CleanupPatch;
+};
+
+/**
+ * Read the existing config file (if any) and apply the patch produced by
+ * `toFileShape`. Returns the merged result that should be written back to
+ * disk. Null patch values for the clearable string fields drop the key
+ * entirely; absent patch keys leave the on-disk value untouched.
+ *
+ * This is the load-bearing function for the "user clears textarea, hits
+ * Save, expects it cleared" UX — see the module-level docstring.
+ */
+export function mergeIntoFileShape(
+  existing: ScribeConfig,
+  patch: FileShapePatch,
+): ScribeConfig {
+  const merged: ScribeConfig = {};
+  // transcribe block: full replace when present in patch; otherwise carry
+  // forward the existing block as-is.
+  if (patch.transcribe !== undefined) {
+    if (patch.transcribe.provider !== undefined) {
+      merged.transcribe = { provider: patch.transcribe.provider };
+    }
+  } else if (existing.transcribe !== undefined) {
+    merged.transcribe = { ...existing.transcribe };
+  }
+
+  // cleanup block: field-by-field merge. Null in patch deletes the key;
+  // undefined in patch carries forward the existing value.
+  const existingCleanup = existing.cleanup ?? {};
+  const patchCleanup = patch.cleanup ?? {};
+  const cleanup: NonNullable<ScribeConfig["cleanup"]> = {};
+  if (patchCleanup.provider !== undefined) cleanup.provider = patchCleanup.provider;
+  else if (existingCleanup.provider !== undefined) cleanup.provider = existingCleanup.provider;
+
+  if (patchCleanup.default !== undefined) cleanup.default = patchCleanup.default;
+  else if (existingCleanup.default !== undefined) cleanup.default = existingCleanup.default;
+
+  if (patchCleanup.system_prompt === null) {
+    // Explicit clear — leave the key out of the merged cleanup block.
+  } else if (patchCleanup.system_prompt !== undefined) {
+    cleanup.system_prompt = patchCleanup.system_prompt;
+  } else if (existingCleanup.system_prompt !== undefined) {
+    cleanup.system_prompt = existingCleanup.system_prompt;
+  }
+
+  if (patchCleanup.context_template === null) {
+    // Explicit clear — leave the key out of the merged cleanup block.
+  } else if (patchCleanup.context_template !== undefined) {
+    cleanup.context_template = patchCleanup.context_template;
+  } else if (existingCleanup.context_template !== undefined) {
+    cleanup.context_template = existingCleanup.context_template;
+  }
+
+  // Carry over `model` if it's already on disk — we don't expose it in the
+  // wire shape today, but the file format allows it and we shouldn't
+  // silently strip operator-set values.
+  if (existingCleanup.model !== undefined && patchCleanup.model === undefined) {
+    cleanup.model = existingCleanup.model;
+  } else if (patchCleanup.model !== undefined) {
+    cleanup.model = patchCleanup.model;
+  }
+
+  if (Object.keys(cleanup).length > 0) merged.cleanup = cleanup;
+  return merged;
+}
+
+/**
+ * Read the existing on-disk config (if any). Returns `{}` when the file is
+ * missing or empty. Throws when the file is present but malformed — same
+ * fail-loud posture as `loadConfig` in `config.ts`.
+ */
+export function readExistingConfig(path: string): ScribeConfig {
+  if (!existsSync(path)) return {};
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to read config ${path}: ${message}`);
+  }
+  if (raw.trim() === "") return {};
+  try {
+    return JSON.parse(raw) as ScribeConfig;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse config ${path}: ${message}`);
+  }
 }
 
 /**
@@ -234,10 +356,16 @@ export function detectRestartRequired(
  * same directory, then renames — POSIX rename is atomic on the same fs, so a
  * crash mid-write leaves either the old file intact or the new file complete,
  * never a half-written file. Same pattern as `services-manifest.ts`.
+ *
+ * Mode 0o600 (scribe#45 review must-fix 2): PR-B will add provider API keys
+ * to this same file. Default umask would produce 0o644 (world-readable) on
+ * shared hosts. Setting the mode at create time means a fresh file is owner-
+ * read/write only from the first byte; subsequent atomic rewrites pass the
+ * same mode so a chmod-out-of-band can't silently revert.
  */
 export function writeConfigFileAtomic(path: string, config: ScribeConfig): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`);
+  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, path);
 }

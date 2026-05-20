@@ -8,7 +8,14 @@
  * via the `configPath` dep — never touches the operator's real ~/.parachute.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchHandler, type ServerDeps } from "./server.ts";
@@ -132,6 +139,59 @@ describe("PUT /.parachute/config", () => {
       expect(scribeConfig.cleanup?.default).toBe(false);
     });
 
+    test("null-clear via HTTP: PUT { cleanupSystemPrompt: null } removes prompt on disk", async () => {
+      // Wire-level regression for scribe#45 must-fix 1. Seed the file with an
+      // OLD prompt, PUT with explicit null, verify the disk file no longer
+      // carries `system_prompt` AND the in-process scribeConfig no longer
+      // carries it either (otherwise the running handler would still send
+      // the old prompt to the cleanup LLM).
+      mkdirSync(configPath.replace(/\/[^/]+$/, ""), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          cleanup: { provider: "ollama", system_prompt: "OLD PROMPT", default: true },
+        }),
+      );
+      const scribeConfig: ServerDeps["scribeConfig"] = {
+        cleanup: { provider: "ollama", system_prompt: "OLD PROMPT", default: true },
+      };
+      const handler = buildHandler(configPath, { scribeConfig });
+
+      const res = await handler(putReq({ cleanupSystemPrompt: null }));
+      expect(res.status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(onDisk.cleanup.system_prompt).toBeUndefined();
+      // Sibling fields survive — the clear is targeted.
+      expect(onDisk.cleanup.provider).toBe("ollama");
+      expect(onDisk.cleanup.default).toBe(true);
+      // In-process config matches disk so the next transcription request
+      // doesn't keep sending the old prompt.
+      expect(scribeConfig.cleanup?.system_prompt).toBeUndefined();
+    });
+
+    test("null-clear via HTTP: PUT { cleanupContextTemplate: null } removes template on disk", async () => {
+      mkdirSync(configPath.replace(/\/[^/]+$/, ""), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          cleanup: { provider: "ollama", context_template: "OLD {{proper_nouns}}" },
+        }),
+      );
+      const scribeConfig: ServerDeps["scribeConfig"] = {
+        cleanup: { provider: "ollama", context_template: "OLD {{proper_nouns}}" },
+      };
+      const handler = buildHandler(configPath, { scribeConfig });
+
+      const res = await handler(putReq({ cleanupContextTemplate: null }));
+      expect(res.status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+      expect(onDisk.cleanup.context_template).toBeUndefined();
+      expect(onDisk.cleanup.provider).toBe("ollama");
+      expect(scribeConfig.cleanup?.context_template).toBeUndefined();
+    });
+
     test("bad payload — non-enum provider → 400 + error message + NO file written", async () => {
       const handler = buildHandler(configPath);
       const res = await handler(putReq({ transcribeProvider: "not-a-real-thing" }));
@@ -163,7 +223,7 @@ describe("PUT /.parachute/config", () => {
       // a 500 rather than crashing the handler.
       const blocker = join(dir, "blocker");
       // Create a file at the position we'll try to mkdir under.
-      writeFileSyncSync(blocker, "x");
+      writeFileSync(blocker, "x");
       const handler = buildHandler(join(blocker, "config.json"));
       const res = await handler(putReq({ transcribeProvider: "whisper" }));
       expect(res.status).toBe(500);
@@ -283,6 +343,27 @@ describe("GET /scribe/admin", () => {
     expect(html).toContain("Cleanup provider");
   });
 
+  test("HTML contains the port-hint footnote (services.json / SCRIBE_PORT)", async () => {
+    // scribe#45 review nit 1 — the restart-required banner needs to tell the
+    // operator that `port` is NOT writable from config.json. Pin the copy.
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(new Request("http://localhost/scribe/admin"));
+    const html = await res.text();
+    expect(html).toContain("services.json");
+    expect(html).toContain("SCRIBE_PORT");
+  });
+
+  test("HTML uses trustedHtml as the setBanner parameter name (nit 2)", async () => {
+    // Light-touch pin so a future author can't silently drop the rename
+    // without thinking about the contract it documents.
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(new Request("http://localhost/scribe/admin"));
+    const html = await res.text();
+    expect(html).toContain("trustedHtml");
+  });
+
   test("closed mode without bearer → 401", async () => {
     process.env.SCRIBE_AUTH_TOKEN = "s3cret";
     const handler = buildHandler("/tmp/unused");
@@ -301,9 +382,3 @@ describe("GET /scribe/admin", () => {
     expect(res.status).toBe(200);
   });
 });
-
-// `writeFileSyncSync` is just an alias for `writeFileSync` — TS-friendly
-// import shim local to this test file (some bun versions ship the binding
-// only under the node:fs name). Kept at the bottom so it doesn't crowd the
-// readable top of the file.
-import { writeFileSync as writeFileSyncSync } from "node:fs";

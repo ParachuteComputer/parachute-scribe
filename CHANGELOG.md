@@ -7,11 +7,20 @@
   - `PUT /.parachute/config` accepts the same camelCase wire shape `GET /.parachute/config` returns, validates against the JSON Schema, and atomically writes the nested file shape to `~/.parachute/scribe/config.json` (tmp + rename — same pattern as `services-manifest.ts`). Scoped on `scribe:admin`.
   - Response carries `{ ok: true, restart_required: [...] }` — the array lists which fields changed in a way that needs a process restart to take effect (provider changes + port). Cleanup-prompt and cleanup-default changes take effect immediately because they're read dynamically per-request; the handler updates the in-process `scribeConfig.cleanup` block to match the new file.
   - `/scribe/admin` is a single self-contained HTML page (inline CSS + vanilla JS, no framework, no build step) that fetches schema + config on load, renders one form field per knob, and displays the restart-required list inline after save. Mirrors the "render a self-contained string from a TS function" pattern in `parachute-hub/src/oauth-ui.ts`.
-- **`src/config-write.ts`** — schema validator (tiny purpose-built draft-07; no external dep), wire→file translator, restart-required differ, atomic writer.
+- **`src/config-write.ts`** — schema validator (tiny purpose-built draft-07; no external dep), wire→file translator, **read-modify-write merger** that honors null-as-clear sentinels for the two optional string fields, restart-required differ, atomic writer.
 - **`src/admin-ui.ts`** — `renderAdminPage()` returns the static HTML.
 
+### Fixed (review folds on PR #45 before merge)
+- **Null-clear no longer silently no-ops.** Clearing the system-prompt or context-template textarea in the form and saving used to write a file that still carried the old value — `toFileShape` dropped `null` before write, and "absent in patch" was indistinguishable from "leave alone." PUT handler now reads the existing file, merges the incoming patch (treating `null` as an explicit deletion), and writes the merged result. The in-process `scribeConfig.cleanup` is replaced (not spread) on success so the next transcription request actually sees the cleared field.
+- **`config.json` is written with mode `0o600`.** Owner-only — preempts PR-B (secrets) accidentally landing world-readable provider keys on shared hosts. Rewrites preserve the mode even if someone chmod'd the file out-of-band.
+
+### Nits folded
+- Restart-required success banner now includes a footnote when `port` appears in the list: "Note: `port` is set via `services.json` or the `SCRIBE_PORT` environment variable, not `config.json`." Avoids the operator re-saving the form expecting the port change to stick.
+- Inline JS in `admin-ui.ts` renames the `setBanner(kind, html)` parameter to `trustedHtml` so the "caller must have sanitized" contract is explicit at every call site.
+- Removed a misleading "TS-friendly import shim" comment from `admin-routes.test.ts` — the import was just a plain alias.
+
 ### Notes
-- 180/180 tests passing (`bun test src/`); typecheck clean.
+- 204/204 tests passing (`bun test src/`); typecheck clean.
 - PR-A only: no secrets management (PR-B) and no hub-side "Configure" link in the admin SPA (PR-C).
 - `port` is in the schema for visibility but not written to disk — scribe's port resolution (`port-resolve.ts`) reads from services.json and env, not config.json. A port change in the form still appears in `restart_required` so the operator knows to update the env/services.json side too.
 

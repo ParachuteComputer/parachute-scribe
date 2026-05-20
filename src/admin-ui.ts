@@ -228,6 +228,13 @@ const STYLES = `
     color: ${PALETTE.fgMuted};
   }
   .banner ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+  .banner-footnote {
+    margin: 0.6rem 0 0;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(0,0,0,0.08);
+    font-size: 0.85rem;
+    opacity: 0.85;
+  }
   .banner code {
     font-family: ${FONT_MONO};
     font-size: 0.85em;
@@ -411,10 +418,15 @@ const PAGE_SCRIPT = String.raw`
 
   function el(id) { return document.getElementById(id); }
 
-  function setBanner(kind, html) {
+  // The second arg is named trustedHtml as a signal that callers MUST have
+  // sanitized any untrusted content (escapeHtml() etc.) before passing it
+  // in. innerHTML is the right primitive here because the success banner
+  // composes its own HTML <ul>; renaming makes the contract explicit at
+  // every call site.
+  function setBanner(kind, trustedHtml) {
     const b = el("status-banner");
     b.className = "banner banner-" + kind;
-    b.innerHTML = html;
+    b.innerHTML = trustedHtml;
     b.hidden = false;
     b.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
@@ -583,9 +595,18 @@ const PAGE_SCRIPT = String.raw`
         const items = restart.map(function (f) {
           return "<li><code>" + escapeHtml(f) + "</code> — " + escapeHtml(RESTART_LABELS[f] || f) + "</li>";
         }).join("");
+        // Surface the port-is-not-in-config.json gotcha: when 'port' shows
+        // up in restart_required, an unwary operator will edit config.json
+        // (or re-save the form) and find scribe still binds the same port.
+        // Port resolution reads services.json + SCRIBE_PORT env, not
+        // config.json -- call that out inline so the operator knows where
+        // to actually change it.
+        const portNote = restart.indexOf("port") !== -1
+          ? "<p class=\"banner-footnote\">Note: <code>port</code> is set via <code>services.json</code> or the <code>SCRIBE_PORT</code> environment variable, not <code>config.json</code>.</p>"
+          : "";
         setBanner(
           "success",
-          "<strong>Configuration saved.</strong> Restart scribe to apply these changes:<ul>" + items + "</ul>"
+          "<strong>Configuration saved.</strong> Restart scribe to apply these changes:<ul>" + items + "</ul>" + portNote
         );
       }
     }

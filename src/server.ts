@@ -19,6 +19,8 @@ import {
 } from "./config-schema.ts";
 import {
   detectRestartRequired,
+  mergeIntoFileShape,
+  readExistingConfig,
   toFileShape,
   validateConfig,
   writeConfigFileAtomic,
@@ -182,10 +184,27 @@ async function handleConfigPut(req: Request, deps: ServerDeps): Promise<Response
     );
   }
   const incoming = result.value;
-  const file = toFileShape(incoming);
+  const patch = toFileShape(incoming);
   const path = deps.configPath ?? resolveDefaultConfigPath();
+
+  // Read-modify-write so null-clear semantics actually clear (scribe#45
+  // must-fix 1). Without this, an absent key in `patch` was indistinguishable
+  // from "leave alone", and clearing a textarea silently no-op'd.
+  let existing: ScribeConfig;
   try {
-    writeConfigFileAtomic(path, file);
+    existing = readExistingConfig(path);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scribe] config read failed (${path}): ${message}`);
+    return Response.json(
+      { error: "read_failed", message: `failed to read ${path}: ${message}` },
+      { status: 500 },
+    );
+  }
+  const merged = mergeIntoFileShape(existing, patch);
+
+  try {
+    writeConfigFileAtomic(path, merged);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[scribe] config write failed (${path}): ${message}`);
@@ -194,12 +213,12 @@ async function handleConfigPut(req: Request, deps: ServerDeps): Promise<Response
       { status: 500 },
     );
   }
-  // Mutate the in-process scribe config so the dynamically-read fields
-  // (cleanup default + prompts) take effect without restart. The provider
-  // closures from boot still hold for the restart-required fields.
-  if (file.cleanup) {
-    deps.scribeConfig.cleanup = { ...deps.scribeConfig.cleanup, ...file.cleanup };
-  }
+  // Mirror the merged-on-disk cleanup block onto the in-process scribeConfig
+  // so dynamically-read fields take effect without restart. Replace the
+  // whole `cleanup` reference rather than spreading: a null-clear (e.g.
+  // `system_prompt`) must remove the key from the live config too, and a
+  // spread would carry the old value forward.
+  deps.scribeConfig.cleanup = merged.cleanup;
   const restartRequired = detectRestartRequired(deps.resolvedConfig, incoming);
   return Response.json({ ok: true, restart_required: restartRequired });
 }
