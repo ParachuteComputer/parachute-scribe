@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3] - 2026-05-20
+
+Stable release. Cumulative changes since `0.4.2`:
+
+- **Config UI at `/scribe/admin`** (#45): static admin form for the JSON config fields (transcribe.provider, cleanup.provider, cleanup.default, cleanup.system_prompt, cleanup.context_template). New `PUT /.parachute/config` endpoint (scope-gated on `scribe:admin`) with atomic write, schema validation, restart-required signaling. `0o600` file mode for forward-compatibility with the future secrets PR. Null-as-deletion-marker semantics for clearable string fields.
+
+Secrets management (provider API keys, etc.) lands in a future scribe PR (PR-B per the design exploration).
+
 ## [0.4.3-rc.1] - 2026-05-20
 
 ### Added
