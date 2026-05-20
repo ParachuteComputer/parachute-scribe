@@ -1,5 +1,5 @@
 import { cleaners, getProvider, transcribers, type Cleaner } from "./providers.ts";
-import { loadConfig, type ScribeConfig } from "./config.ts";
+import { loadConfig, resolveDefaultConfigPath, type ScribeConfig } from "./config.ts";
 import { buildProperNounsBlockFromEntries, parseContextPayload } from "./context.ts";
 import { preflight, withCors } from "./cors.ts";
 import { upsertService } from "./services-manifest.ts";
@@ -18,6 +18,15 @@ import {
   handleConfigSchema,
 } from "./config-schema.ts";
 import {
+  detectRestartRequired,
+  mergeIntoFileShape,
+  readExistingConfig,
+  toFileShape,
+  validateConfig,
+  writeConfigFileAtomic,
+} from "./config-write.ts";
+import { renderAdminPage } from "./admin-ui.ts";
+import {
   SCOPE_ADMIN,
   SCOPE_TRANSCRIBE,
   enforceAuth,
@@ -33,6 +42,14 @@ export type ServerDeps = {
   cleanup: Cleaner;
   resolvedConfig: ResolvedConfig;
   scribeConfig: ScribeConfig;
+  /**
+   * Path to the on-disk config file the admin PUT writes through. Defaults
+   * to `resolveDefaultConfigPath()` so production code never specifies it;
+   * tests inject a tmp path. Pulled out as a dep rather than re-resolved at
+   * request time so the test can sandbox the write target without touching
+   * the operator's real `~/.parachute`.
+   */
+  configPath?: string;
 };
 
 export function createFetchHandler(deps: ServerDeps) {
@@ -56,6 +73,11 @@ export function createFetchHandler(deps: ServerDeps) {
 function requiredScopeFor(pathname: string, method: string): string | null {
   if (pathname === "/v1/audio/transcriptions" && method === "POST") return SCOPE_TRANSCRIBE;
   if (pathname.startsWith("/.parachute/config")) return SCOPE_ADMIN;
+  // `/scribe/admin` is the static admin SPA. The page itself is just HTML
+  // and (open mode aside) can't do anything without a Bearer to call back
+  // with — but we still scope-gate the HTML response so an unauthorized
+  // operator gets a clean 403 rather than a page that 401s on every fetch.
+  if (pathname === "/scribe/admin") return SCOPE_ADMIN;
   if (pathname === "/v1/models") return SCOPE_TRANSCRIBE;
   return null;
 }
@@ -72,6 +94,9 @@ async function route(
   }
 
   if (url.pathname.startsWith("/.parachute/")) {
+    if (url.pathname === "/.parachute/config" && req.method === "PUT") {
+      return handleConfigPut(req, deps);
+    }
     if (req.method !== "GET") {
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     }
@@ -80,6 +105,19 @@ async function route(
     if (url.pathname === "/.parachute/config/schema") return handleConfigSchema();
     if (url.pathname === "/.parachute/config") return handleConfig(deps.resolvedConfig);
     return new Response("Not found", { status: 404 });
+  }
+
+  if (url.pathname === "/scribe/admin" && req.method === "GET") {
+    return new Response(renderAdminPage(), {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        // The page is per-instance branded but otherwise static and small.
+        // Short cache so a `bun link`-updated scribe serves the new HTML on
+        // reload without manual cache-busts.
+        "Cache-Control": "no-cache",
+      },
+    });
   }
 
   if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
@@ -97,6 +135,92 @@ async function route(
   }
 
   return new Response("Not found", { status: 404 });
+}
+
+/**
+ * PUT /.parachute/config — schema-validate the incoming body, atomically
+ * persist it to `~/.parachute/scribe/config.json`, return the list of fields
+ * whose change requires a restart to take effect.
+ *
+ * The in-process resolved config is NOT mutated here. Provider/port values
+ * are bound to the running handler at boot in `startServer()`; an in-place
+ * swap would skip provider-init invariants. Operators see the new config on
+ * the next process boot. `restart_required` makes that explicit.
+ *
+ * Fields that ARE read dynamically per-request (the cleanup default flag, the
+ * cleanup prompt overrides) take effect on the next call without restart
+ * because `handleTranscription` re-reads `deps.scribeConfig.cleanup.*` each
+ * time. To keep that working we mutate the existing `scribeConfig` object's
+ * `cleanup` block in place after a successful write — the running handler's
+ * closure already holds the reference, so the new prompts apply immediately.
+ *
+ * `transcribeProvider` / `cleanupProvider` / `port` changes still require
+ * restart because the provider *functions* (`deps.transcribe`, `deps.cleanup`)
+ * were closed over at boot. We don't repoint them mid-life — too easy to
+ * misconfigure a provider with no boot-time validation.
+ */
+async function handleConfigPut(req: Request, deps: ServerDeps): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return Response.json(
+      {
+        error: "invalid_json",
+        message: err instanceof Error ? err.message : "request body was not valid JSON",
+      },
+      { status: 400 },
+    );
+  }
+  const result = validateConfig(body);
+  if (!result.ok) {
+    return Response.json(
+      {
+        error: "validation_failed",
+        message: result.errors.map((e) => `${e.path}: ${e.message}`).join("; "),
+        errors: result.errors,
+      },
+      { status: 400 },
+    );
+  }
+  const incoming = result.value;
+  const patch = toFileShape(incoming);
+  const path = deps.configPath ?? resolveDefaultConfigPath();
+
+  // Read-modify-write so null-clear semantics actually clear (scribe#45
+  // must-fix 1). Without this, an absent key in `patch` was indistinguishable
+  // from "leave alone", and clearing a textarea silently no-op'd.
+  let existing: ScribeConfig;
+  try {
+    existing = readExistingConfig(path);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scribe] config read failed (${path}): ${message}`);
+    return Response.json(
+      { error: "read_failed", message: `failed to read ${path}: ${message}` },
+      { status: 500 },
+    );
+  }
+  const merged = mergeIntoFileShape(existing, patch);
+
+  try {
+    writeConfigFileAtomic(path, merged);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scribe] config write failed (${path}): ${message}`);
+    return Response.json(
+      { error: "write_failed", message: `failed to write ${path}: ${message}` },
+      { status: 500 },
+    );
+  }
+  // Mirror the merged-on-disk cleanup block onto the in-process scribeConfig
+  // so dynamically-read fields take effect without restart. Replace the
+  // whole `cleanup` reference rather than spreading: a null-clear (e.g.
+  // `system_prompt`) must remove the key from the live config too, and a
+  // spread would carry the old value forward.
+  deps.scribeConfig.cleanup = merged.cleanup;
+  const restartRequired = detectRestartRequired(deps.resolvedConfig, incoming);
+  return Response.json({ ok: true, restart_required: restartRequired });
 }
 
 async function handleTranscription(req: Request, deps: ServerDeps): Promise<Response> {
