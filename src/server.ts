@@ -6,6 +6,7 @@ import {
   type ContextPayload,
 } from "./context.ts";
 import { preflight, withCors } from "./cors.ts";
+import { normalizeMount, stripMount } from "./mount.ts";
 import {
   UrlFetchError,
   fetchAudioFromUrl,
@@ -69,25 +70,52 @@ export type ServerDeps = {
    * this instead of reading `~/.claude.json`. Production never passes it.
    */
   setupTokenStatusFn?: () => ReturnType<typeof readSetupTokenStatus>;
+  /**
+   * Mount prefix this scribe instance answers under. Default `""` means
+   * "bare routes at the origin root" — legacy behavior, unchanged for
+   * every deployment that didn't pass `--mount`. Set to e.g. `"/scribe"`
+   * and external requests to `/scribe/v1/audio/transcriptions` are
+   * stripped to `/v1/audio/transcriptions` before the route table fires.
+   * Requests that fall outside the mount return 404. Issue #39.
+   */
+  mount?: string;
 };
 
 export function createFetchHandler(deps: ServerDeps) {
+  const mount = normalizeMount(deps.mount ?? "");
+  // Re-bind the deps with the normalized mount so route handlers (e.g. the
+  // admin SPA renderer) read the canonical value, not a raw `--mount foo`
+  // that hasn't been through `normalizeMount` yet.
+  const boundDeps: ServerDeps = { ...deps, mount };
   return async (req: Request): Promise<Response> => {
     if (req.method === "OPTIONS") return preflight();
     const url = new URL(req.url);
-    const auth = await enforceAuth(req, url.pathname);
+    const internalPath = stripMount(url.pathname, mount);
+    if (internalPath === null) {
+      // The mount is configured but the request fell outside it. Don't
+      // leak which routes exist — a flat 404 is the right signal that
+      // this scribe instance doesn't serve the bare path.
+      return withCors(new Response("Not found", { status: 404 }));
+    }
+    const auth = await enforceAuth(req, internalPath);
     if (auth instanceof Response) return withCors(auth);
-    return withCors(await route(req, url, auth.scopes, deps));
+    return withCors(await route(req, url, internalPath, auth.scopes, boundDeps));
   };
 }
 
 /**
- * Per-route required scope.
+ * Per-route required scope. Paths here are **post-mount-strip** — see
+ * `createFetchHandler`. The route table is canonically defined at root
+ * regardless of where the reverse proxy mounts scribe externally.
  *
  *   - `/v1/audio/transcriptions` → `scribe:transcribe`
  *   - `/.parachute/config*`      → `scribe:admin`
  *   - `/admin/*`                 → `scribe:admin` (refresh / clear endpoints)
- *   - `/scribe/admin`            → `scribe:admin` (the SPA page itself)
+ *   - `/scribe/admin`            → `scribe:admin` (SPA page — legacy alias
+ *                                  for back-compat with direct-loopback
+ *                                  callers using the `/scribe/admin` URL
+ *                                  pre-#39; the canonical post-mount
+ *                                  match is just `/admin`)
  *   - `/v1/models`               → `scribe:transcribe`
  */
 function requiredScopeFor(pathname: string, method: string): string | null {
@@ -95,9 +123,14 @@ function requiredScopeFor(pathname: string, method: string): string | null {
   if (pathname === "/v1/audio/transcriptions-url" && method === "POST") return SCOPE_TRANSCRIBE;
   if (pathname.startsWith("/.parachute/config")) return SCOPE_ADMIN;
   if (pathname.startsWith("/admin/")) return SCOPE_ADMIN;
-  if (pathname === "/scribe/admin") return SCOPE_ADMIN;
+  if (pathname === "/admin" || pathname === "/scribe/admin") return SCOPE_ADMIN;
   if (pathname === "/v1/models") return SCOPE_TRANSCRIBE;
-  if (pathname === "/scribe/mcp" || pathname.startsWith("/scribe/mcp/")) {
+  if (
+    pathname === "/mcp" ||
+    pathname.startsWith("/mcp/") ||
+    pathname === "/scribe/mcp" ||
+    pathname.startsWith("/scribe/mcp/")
+  ) {
     // MCP transport — the SDK negotiates capabilities on the first call;
     // per-tool scope enforcement happens inside the handler so a caller
     // with only `scribe:transcribe` can list/call tools without needing
@@ -110,39 +143,44 @@ function requiredScopeFor(pathname: string, method: string): string | null {
 async function route(
   req: Request,
   url: URL,
+  internalPath: string,
   scopes: readonly string[],
   deps: ServerDeps,
 ): Promise<Response> {
-  const required = requiredScopeFor(url.pathname, req.method);
+  const required = requiredScopeFor(internalPath, req.method);
   if (required && !hasScope(scopes, required)) {
     return insufficientScopeResponse(required, scopes);
   }
 
-  if (url.pathname.startsWith("/.parachute/")) {
-    if (url.pathname === "/.parachute/config" && req.method === "PUT") {
+  if (internalPath.startsWith("/.parachute/")) {
+    if (internalPath === "/.parachute/config" && req.method === "PUT") {
       return handleConfigPut(req, deps);
     }
     if (req.method !== "GET") {
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     }
-    if (url.pathname === "/.parachute/info") return handleParachuteInfo();
-    if (url.pathname === "/.parachute/icon.svg") return handleParachuteIcon();
-    if (url.pathname === "/.parachute/config/schema") return handleConfigSchema();
-    if (url.pathname === "/.parachute/config") return handleConfigGet(deps);
+    if (internalPath === "/.parachute/info") return handleParachuteInfo();
+    if (internalPath === "/.parachute/icon.svg") return handleParachuteIcon();
+    if (internalPath === "/.parachute/config/schema") return handleConfigSchema();
+    if (internalPath === "/.parachute/config") return handleConfigGet(deps);
     return new Response("Not found", { status: 404 });
   }
 
   // Admin actions live under /admin/* — refresh-claude-token-status is the
   // only one shipped in 0.4.4-rc.1; clear-credential follows in Phase 2.
-  if (url.pathname === "/admin/refresh-claude-token-status" && req.method === "POST") {
+  if (internalPath === "/admin/refresh-claude-token-status" && req.method === "POST") {
     return handleRefreshSetupTokenStatus(deps);
   }
-  if (url.pathname.startsWith("/admin/") && req.method !== "GET") {
+  if (internalPath.startsWith("/admin/") && req.method !== "GET") {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
-  if (url.pathname === "/scribe/admin" && req.method === "GET") {
-    return new Response(renderAdminPage(), {
+  // SPA page: canonical at `/admin` (post-mount), with `/scribe/admin` kept
+  // as a legacy alias for direct-loopback callers using the pre-#39 URL
+  // unchanged. Both serve the same HTML; the mount value baked into the
+  // page determines what URLs the in-page fetches use.
+  if ((internalPath === "/admin" || internalPath === "/scribe/admin") && req.method === "GET") {
+    return new Response(renderAdminPage(deps.mount ?? ""), {
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
@@ -151,23 +189,28 @@ async function route(
     });
   }
 
-  if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
+  if (internalPath === "/v1/audio/transcriptions" && req.method === "POST") {
     return handleTranscription(req, deps);
   }
 
-  if (url.pathname === "/v1/audio/transcriptions-url" && req.method === "POST") {
+  if (internalPath === "/v1/audio/transcriptions-url" && req.method === "POST") {
     return handleTranscriptionUrl(req, deps);
   }
 
-  if (url.pathname === "/scribe/mcp" || url.pathname.startsWith("/scribe/mcp/")) {
+  if (
+    internalPath === "/mcp" ||
+    internalPath.startsWith("/mcp/") ||
+    internalPath === "/scribe/mcp" ||
+    internalPath.startsWith("/scribe/mcp/")
+  ) {
     return handleScribeMcp(req, scopes, deps);
   }
 
-  if (url.pathname === "/health") {
+  if (internalPath === "/health") {
     return Response.json({ ok: true });
   }
 
-  if (url.pathname === "/v1/models") {
+  if (internalPath === "/v1/models") {
     return Response.json({
       data: [{ id: deps.resolvedConfig.transcribeProvider, object: "model" }],
     });
@@ -471,8 +514,18 @@ function missingProviderResponse(): Response {
   );
 }
 
-export async function startServer() {
+export type StartServerOptions = {
+  /**
+   * Mount-prefix this scribe instance answers under. Forwarded from
+   * `parachute-scribe serve --mount <prefix>`. Default `""` keeps
+   * routes bare at the origin root (legacy behavior). Issue #39.
+   */
+  mount?: string;
+};
+
+export async function startServer(opts: StartServerOptions = {}) {
   const config = await loadConfig();
+  const mount = normalizeMount(opts.mount ?? "");
 
   // Transcribe provider: config > env > built-in `parakeet-mlx` default.
   // When even the default isn't viable on the host (e.g. Render container
@@ -511,6 +564,7 @@ export async function startServer() {
   console.log(`  transcribe: ${transcribeProviderName}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
   console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN or hub JWT)" : "open"}`);
+  console.log(`  mount:      ${mount === "" ? "(none — bare routes at origin root)" : mount}`);
   warnIfTokenLooksJwt();
 
   const handler = createFetchHandler({
@@ -518,6 +572,7 @@ export async function startServer() {
     cleanup,
     resolvedConfig,
     scribeConfig: config,
+    mount,
   });
 
   try {

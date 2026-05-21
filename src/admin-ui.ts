@@ -47,9 +47,22 @@ const FONT_MONO = `ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", mono
 /**
  * Render the admin page. Pure function — returns the HTML string. The page
  * itself fetches live state on load (one round-trip for the schema, one for
- * the resolved config), so the rendered HTML is the same across requests.
+ * the resolved config), so the rendered HTML is the same across requests
+ * for a given mount.
+ *
+ * `mount` is the path prefix the in-page fetches must use to reach scribe's
+ * `/.parachute/config` and `/.parachute/config/schema` endpoints. When
+ * scribe is launched with `--mount /scribe`, the canonical URL of those
+ * endpoints externally is `/scribe/.parachute/config`; the page can't
+ * assume bare-root URLs. Default `""` (no mount) preserves the existing
+ * shape for direct-loopback callers. Issue #39.
  */
-export function renderAdminPage(): string {
+export function renderAdminPage(mount = ""): string {
+  // Build the mount-aware URLs server-side so the page script is a
+  // pure no-state interpolation. `mount` is already normalized by the
+  // server boot path (see `src/mount.ts`).
+  const configUrl = `${mount}/.parachute/config`;
+  const schemaUrl = `${mount}/.parachute/config/schema`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -120,13 +133,20 @@ export function renderAdminPage(): string {
       <footer class="card-footer">
         <p class="footer-hint">
           File on disk: <code>~/.parachute/scribe/config.json</code>.
-          Live values (resolved): <a href="/.parachute/config">/.parachute/config</a>.
-          Schema: <a href="/.parachute/config/schema">/.parachute/config/schema</a>.
+          Live values (resolved): <a href="${configUrl}">${configUrl}</a>.
+          Schema: <a href="${schemaUrl}">${schemaUrl}</a>.
         </p>
       </footer>
     </div>
   </main>
 
+  <script>
+    // Mount-prefix the page-script's fetch URLs see. Server-rendered so
+    // the script body can stay a plain string literal (no per-request
+    // template interpolation inside the script itself). Issue #39.
+    window.__SCRIBE_CONFIG_URL__ = ${JSON.stringify(configUrl)};
+    window.__SCRIBE_SCHEMA_URL__ = ${JSON.stringify(schemaUrl)};
+  </script>
   <script>${PAGE_SCRIPT}</script>
 </body>
 </html>`;
@@ -509,8 +529,8 @@ const PAGE_SCRIPT = String.raw`
 
     try {
       const [schemaRes, configRes] = await Promise.all([
-        fetch("/.parachute/config/schema"),
-        fetch("/.parachute/config"),
+        fetch(window.__SCRIBE_SCHEMA_URL__ || "/.parachute/config/schema"),
+        fetch(window.__SCRIBE_CONFIG_URL__ || "/.parachute/config"),
       ]);
       if (schemaRes.status === 401 || configRes.status === 401) {
         setBanner(
@@ -551,7 +571,7 @@ const PAGE_SCRIPT = String.raw`
     const body = collectForm();
     let res;
     try {
-      res = await fetch("/.parachute/config", {
+      res = await fetch(window.__SCRIBE_CONFIG_URL__ || "/.parachute/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

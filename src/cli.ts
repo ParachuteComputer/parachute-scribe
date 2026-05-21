@@ -32,6 +32,12 @@ Options:
   --config <path>                     Path to scribe.config.json
   --json                              Output JSON instead of plain text
 
+Serve-only options:
+  --mount <prefix>                    Path prefix scribe answers under
+                                      (e.g. --mount /scribe → routes at
+                                      /scribe/health, /scribe/v1/...).
+                                      Default "" = bare routes at root.
+
 Environment:
   TRANSCRIBE_PROVIDER                 Default transcription provider
   CLEANUP_PROVIDER                    Default cleanup provider
@@ -50,12 +56,13 @@ Examples:
   parachute-scribe note.wav --cleanup claude-code    # uses your Claude Code auth
   parachute-scribe https://example.com/podcast.mp3   # transcribe from URL
   parachute-scribe serve
+  parachute-scribe serve --mount /scribe             # behind a reverse proxy
 `);
 }
 
 switch (command) {
   case "serve":
-    await startServer();
+    await startServer({ mount: getFlag("--mount") });
     break;
 
   case "providers":

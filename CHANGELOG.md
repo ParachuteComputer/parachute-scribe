@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.4-rc.3] - 2026-05-21
+
+### feat(scribe): accept --mount flag for prefix-stripping uniform with notes-serve (#39)
+
+Closes [#39](https://github.com/ParachuteComputer/parachute-scribe/issues/39). Adds a `--mount <prefix>` flag to `parachute-scribe serve`, mirroring the shape `notes-serve.ts` (and `parachute-agent`) already use. Scribe now strips the configured mount from inbound pathnames before the route table fires, so external `/scribe/v1/audio/transcriptions` reaches the same internal handler as bare `/v1/audio/transcriptions`.
+
+**Flag semantics.** Default is empty (`--mount ""` or omitting the flag) — bare routes at the origin root, identical to pre-#39 behavior. `--mount /` is equivalent. `--mount /scribe` means every external URL must be prefixed with `/scribe`; bare requests return 404. `--mount scribe` (no leading slash) and `--mount /scribe/` (trailing slash) are auto-normalized to `/scribe`.
+
+**Hub coordination.** No breaking change today. Hub continues to set `stripPrefix: true` on the SCRIBE_FALLBACK entry, so the existing reverse-proxy path still strips the prefix before forwarding. The follow-up — flip hub's `stripPrefix` to `false` and pass `--mount /scribe` in the start command — is tracked on hub's side and lands when there's bandwidth.
+
+**Admin SPA back-compat.** The `/scribe/admin` URL keeps working at the default mount as a legacy alias; the canonical post-mount route is `/admin`. Same back-compat applies to `/scribe/mcp` → `/mcp`. When scribe is launched with `--mount /scribe`, the admin page bakes the mount prefix into its in-page fetch URLs so the `fetch('/.parachute/config')` calls become `fetch('/scribe/.parachute/config')`.
+
+**New files.** `src/mount.ts` (`normalizeMount` + `stripMount` helpers), `src/mount.test.ts` (30 new tests covering the matrix of mount values and route shapes).
+
 ## [0.4.4-rc.2] - 2026-05-21
 
 ### feat(scribe): POST /transcribe-url + MCP server (#34, #35)
