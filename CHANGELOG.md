@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.4.4-rc.2] - 2026-05-21
+
+### feat(scribe): POST /transcribe-url + MCP server (#34, #35)
+
+Adds URL-based audio ingestion and an MCP transport so scribe is reachable from non-REST callers (paraclaw agent containers, MCP clients).
+
+#### `POST /v1/audio/transcriptions-url`
+
+Closes [#34](https://github.com/ParachuteComputer/parachute-scribe/issues/34). JSON body: `{ url, cleanup?, context? }`. Downloads audio from `url`, runs the existing transcribe → optional-cleanup pipeline, returns `{ text, source: { url, bytes, contentType } }`.
+
+**Scope limited to direct audio URLs.** YouTube + general-purpose video extraction is punted (see "YouTube punt" below). Accepted Content-Types: `audio/*`, plus `video/{webm,mp4,ogg,quicktime}` containers that often carry audio-only payloads. `application/octet-stream` passes when the URL path ends in an audio-shaped extension (mp3, m4a, wav, flac, ogg, opus, oga, webm, mp4, m4b, aac, aiff, aif).
+
+**SSRF defenses (`src/url-fetch.ts`):**
+
+- **Scheme allowlist** — `http:` / `https:` only. `file://`, `data:`, `gopher://`, etc. → 400 `unsupported_scheme`.
+- **Hostname guard** — `localhost`, `*.localhost`, IP literals in loopback / private (10/8, 172.16/12, 192.168/16) / link-local (169.254/16, fe80::/10) / CG-NAT (100.64/10) / multicast / reserved → 400 `blocked_host`. IPv4-mapped-IPv6 (`::ffff:127.0.0.1` and the hex-normalized form Bun emits) deferred to the v4 check.
+- **DNS resolution + re-check** — hostnames resolve via `dns.lookup` and the resolved address re-runs the IP blocklist (catches `169-254-169-254.example.com` style rebinding).
+- **Redirect revalidation** — every `3xx Location` hop re-runs the full SSRF gauntlet. Max 5 redirects.
+- **Size cap** — `SCRIBE_URL_MAX_BYTES` (default 100 MiB). Enforced both via `Content-Length` (when declared) AND mid-stream — a chunked-transfer source that omits Content-Length can't bypass.
+- **Timeout** — `SCRIBE_URL_TIMEOUT_MS` (default 5 min). Wraps the whole fetch.
+- **Content-Type sniff** — non-audio responses 415 *before* hitting the transcription pipeline.
+
+Error responses use stable shapes the caller can branch on: `{error, message}` where `error` is one of `invalid_url | unsupported_scheme | blocked_host | dns_failed | fetch_failed | timeout | too_large | not_audio | invalid_json`.
+
+**YouTube punt.** Issue #34 mentioned YouTube + podcasts. Podcasts (direct mp3 RSS items) work today. YouTube does NOT — supporting `yt-dlp` would mean a heavy runtime dep (~50MB Python + ffmpeg) and a much bigger SSRF surface (libcurl plus all the protocol handlers yt-dlp speaks). Callers extract audio with `yt-dlp` outside scribe and POST the resulting URL or file. This is documented in the README and on the MCP tool's description.
+
+**Scope:** `scribe:transcribe` (same as the file endpoint).
+
+#### MCP server at `/scribe/mcp`
+
+Closes [#35](https://github.com/ParachuteComputer/parachute-scribe/issues/35). Streamable HTTP transport in stateless mode (no session ID generator — server restarts never break clients), mounted at `/scribe/mcp`. Same pattern vault uses at `/vault/{name}/mcp`.
+
+Two tools:
+
+- **`transcribe`** — `{audio_base64, filename?, cleanup?, context?}`. Decodes base64 (and base64url — Claude Code passes the latter) and runs the standard pipeline.
+- **`transcribe-url`** — `{url, cleanup?, context?}`. Same as the REST URL endpoint. Returns `structuredContent.source` alongside the text content so MCP clients with JSON understanding can pick up the final URL / bytes / content-type without re-parsing the text payload.
+
+Both tools require `scribe:transcribe`; the tool registry's `requiredScopeForTool` defaults unknown tools to `scribe:admin` so a future un-registered tool can't be reached accidentally. The transport-level scope gate filters `tools/list` to what the caller can actually invoke.
+
+Future tools listed in #35 (`list-jobs`, `get-job`) are deferred — scribe has no job-tracking layer today; it's request/response only.
+
+#### CLI
+
+`parachute-scribe <url>` now accepts an `http://` or `https://` URL alongside the file path. URL inputs go through the same SSRF-guarded fetcher as the REST endpoint.
+
+#### Tests
+
+34 unit tests in `url-fetch.test.ts` cover scheme rejection, IP-literal blocklist (v4 + v6 + IPv4-mapped-v6), DNS resolution + blocklist, redirect revalidation, size cap (mid-stream), non-audio 415, content-type fallback for `application/octet-stream` + audio extension.
+
+12 integration tests in `transcribe-url-route.test.ts` exercise the full REST endpoint: happy path, missing URL, invalid JSON, SSRF rejection, unsupported scheme, non-audio, 404 fallthrough, missing-provider 400 / `missing_provider`, cleanup pass-through, context-payload threading, auth gating.
+
+7 MCP tests in `mcp/mcp.test.ts` cover `tools/list`, both tools' happy paths, structured-content source field, SSRF rejection (as `isError: true` tool result, not transport 4xx), invalid arguments, missing-provider, and auth gating.
+
+#### One-PR-vs-two rationale
+
+Issues #34 and #35 were filed together: #34 is the URL endpoint, #35 is the MCP server exposing #34 as a tool. The MCP server is ~120 LOC of scaffolding that wraps the same pipeline the REST endpoint uses — splitting them would mean either landing #35 with a stub `transcribe-url` tool returning `not_implemented`, or landing #34 first and #35 immediately after with a near-empty diff. One PR keeps the scope cohesive.
+
+#### Test count
+
+314 pass / 0 fail (was 261 / 0 on rc.1) — 53 new tests across the URL fetcher (34), REST endpoint (12), and MCP transport (7).
+
 ## [0.4.4-rc.1] - 2026-05-21
 
 ### feat(scribe): admin SPA configurable transcription + cleanup providers (schema + per-request key reads + migration shim)

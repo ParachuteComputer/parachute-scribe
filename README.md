@@ -76,6 +76,46 @@ cleanup: <bool>        # optional extension — run LLM cleanup
 
 Response: `{ "text": "..." }`
 
+### URL ingestion
+
+For audio that already lives on the public web (podcast feed items,
+direct mp3/m4a/wav/ogg/flac/webm URLs):
+
+```
+POST /v1/audio/transcriptions-url
+Content-Type: application/json
+
+{
+  "url": "https://example.com/episode-42.mp3",
+  "cleanup": true,                         // optional
+  "context": { "entries": [...] }          // optional proper-nouns block
+}
+```
+
+Response: `{ "text": "...", "source": { "url": "...", "bytes": 1234567, "contentType": "audio/mpeg" } }`
+
+SSRF defenses: only `http:` / `https:` schemes; rejects `localhost`,
+loopback / private / link-local / CG-NAT / multicast IPs (re-checked on
+every redirect); 100 MiB body cap (override via `SCRIBE_URL_MAX_BYTES`);
+5-minute timeout (`SCRIBE_URL_TIMEOUT_MS`). YouTube and other site
+extractors are NOT supported — use `yt-dlp` to extract audio first, then
+POST the resulting URL or file.
+
+### MCP transport
+
+Scribe also speaks [MCP](https://modelcontextprotocol.io/) at `/scribe/mcp`
+(streamable HTTP, stateless mode — restart-safe). Exposes two tools:
+
+- `transcribe` — accepts `audio_base64` + optional `filename`, `cleanup`, `context`
+- `transcribe-url` — accepts `url` + optional `cleanup`, `context`
+
+Same scope gate as the REST endpoints — `scribe:transcribe` required.
+Useful for agents inside containers (e.g. `parachute-agent`) that already
+have MCP wiring but no REST plumbing.
+
+Streamable-HTTP MCP requires `Accept: application/json, text/event-stream`
+on every request — the SDK will refuse the negotiation without both types.
+
 Other endpoints:
 
 ```
@@ -85,6 +125,7 @@ GET  /.parachute/info              # Module identity (name, version, icon, kind)
 GET  /.parachute/icon.svg          # Inline SVG icon
 GET  /.parachute/config/schema     # Draft-07 JSON Schema for scribe's config
 GET  /.parachute/config            # Current resolved runtime config values
+*    /scribe/mcp                   # MCP (streamable HTTP)
 ```
 
 Scribe reserves two scopes for future hub-issued-token enforcement:
