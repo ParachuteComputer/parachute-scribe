@@ -22,6 +22,7 @@ import {
 import { SCOPE_TRANSCRIBE, hasScope } from "../auth.ts";
 import { McpToolError, SCRIBE_MCP_TOOLS } from "./tools.ts";
 import type { ServerDeps } from "../server.ts";
+import pkg from "../../package.json" with { type: "json" };
 
 /**
  * Required scope per tool. Both current tools wrap the transcription
@@ -48,7 +49,7 @@ export async function handleScribeMcp(
   });
 
   const server = new Server(
-    { name: "parachute-scribe", version: deps.resolvedConfig.port ? "mcp" : "mcp" },
+    { name: "parachute-scribe", version: pkg.version },
     {
       capabilities: { tools: {} },
       instructions:

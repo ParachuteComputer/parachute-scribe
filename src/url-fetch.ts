@@ -350,7 +350,8 @@ function isAudioish(contentType: string | null, url: URL): boolean {
  *
  * The fetch is `redirect: "manual"` so we can re-validate each Location
  * hop against the SSRF blocklist; a redirect to `http://127.0.0.1:1939`
- * would otherwise route around the initial-URL check. Max 5 redirects.
+ * would otherwise route around the initial-URL check. Max 5 redirects
+ * (6 fetches — initial request + up to 5 redirect hops).
  */
 export async function fetchAudioFromUrl(input: string): Promise<FetchedAudio> {
   const startUrl = parseAndValidateUrl(input);

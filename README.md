@@ -113,6 +113,9 @@ Same scope gate as the REST endpoints — `scribe:transcribe` required.
 Useful for agents inside containers (e.g. `parachute-agent`) that already
 have MCP wiring but no REST plumbing.
 
+Streamable-HTTP MCP requires `Accept: application/json, text/event-stream`
+on every request — the SDK will refuse the negotiation without both types.
+
 Other endpoints:
 
 ```
