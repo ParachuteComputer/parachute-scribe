@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, resolveDefaultConfigPath } from "./config.ts";
+import { loadConfig, migrateClaudeToAnthropic, resolveDefaultConfigPath } from "./config.ts";
 
 describe("config loading + legacy migration", () => {
   let home: string;
@@ -37,10 +37,10 @@ describe("config loading + legacy migration", () => {
     mkdirSync(join(home, "scribe"), { recursive: true });
     writeFileSync(
       join(home, "scribe", "config.json"),
-      JSON.stringify({ cleanup: { provider: "claude" } }),
+      JSON.stringify({ cleanup: { provider: "ollama" } }),
     );
     const cfg = await loadConfig();
-    expect(cfg.cleanup?.provider).toBe("claude");
+    expect(cfg.cleanup?.provider).toBe("ollama");
   });
 
   test("migrates legacy config on first load and reads contents", async () => {
@@ -60,10 +60,10 @@ describe("config loading + legacy migration", () => {
 
   test("migration is idempotent across repeated loads", async () => {
     const legacy = join(home, "scribe.config.json");
-    writeFileSync(legacy, JSON.stringify({ cleanup: { provider: "claude" } }));
+    writeFileSync(legacy, JSON.stringify({ cleanup: { provider: "ollama" } }));
     await loadConfig();
     const cfg = await loadConfig();
-    expect(cfg.cleanup?.provider).toBe("claude");
+    expect(cfg.cleanup?.provider).toBe("ollama");
     expect(existsSync(legacy)).toBe(false);
   });
 
@@ -104,7 +104,7 @@ describe("config loading + legacy migration", () => {
     writeFileSync(
       join(home, "scribe", "config.json"),
       JSON.stringify({
-        cleanup: { provider: "claude" },
+        cleanup: { provider: "ollama" },
         vault: {
           url: "http://localhost:1940",
           contexts: [{ tag: "person" }],
@@ -126,8 +126,114 @@ describe("config loading + legacy migration", () => {
       console.warn = origWarn;
     }
 
-    expect(cfg.cleanup?.provider).toBe("claude");
+    expect(cfg.cleanup?.provider).toBe("ollama");
     expect((cfg as Record<string, unknown>).vault).toBeDefined(); // ignored by typesystem; kept as-is from JSON
     expect(warnings.some((w) => w.includes("\"vault\" block") && w.includes("ignored"))).toBe(true);
+  });
+});
+
+describe("site#52 — cleanupProvider 'claude' → 'anthropic' migration shim", () => {
+  let home: string;
+  let prevHome: string | undefined;
+  let prevScribeCfg: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "scribe-mig-"));
+    prevHome = process.env.PARACHUTE_HOME;
+    prevScribeCfg = process.env.SCRIBE_CONFIG;
+    process.env.PARACHUTE_HOME = home;
+    delete process.env.SCRIBE_CONFIG;
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.PARACHUTE_HOME;
+    else process.env.PARACHUTE_HOME = prevHome;
+    if (prevScribeCfg === undefined) delete process.env.SCRIBE_CONFIG;
+    else process.env.SCRIBE_CONFIG = prevScribeCfg;
+  });
+
+  test("migrateClaudeToAnthropic(): pure rewrite on the in-memory shape", () => {
+    const before = { cleanup: { provider: "claude", default: true } };
+    const { config, migrated } = migrateClaudeToAnthropic(before);
+    expect(migrated).toBe(true);
+    expect(config.cleanup?.provider).toBe("anthropic");
+    // Sibling fields preserved.
+    expect(config.cleanup?.default).toBe(true);
+    // Input not mutated.
+    expect(before.cleanup.provider).toBe("claude");
+  });
+
+  test("migrateClaudeToAnthropic(): no-op when provider is anything else", () => {
+    for (const prov of ["anthropic", "ollama", "claude-code", "none"]) {
+      const { config, migrated } = migrateClaudeToAnthropic({
+        cleanup: { provider: prov },
+      });
+      expect(migrated).toBe(false);
+      expect(config.cleanup?.provider).toBe(prov);
+    }
+  });
+
+  test("migrateClaudeToAnthropic(): no-op when cleanup block absent", () => {
+    const { config, migrated } = migrateClaudeToAnthropic({});
+    expect(migrated).toBe(false);
+    expect(config).toEqual({});
+  });
+
+  test("loadConfig() rewrites disk + returns migrated value on first load", async () => {
+    mkdirSync(join(home, "scribe"), { recursive: true });
+    const path = join(home, "scribe", "config.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ cleanup: { provider: "claude", default: true } }),
+    );
+
+    const cfg = await loadConfig();
+    expect(cfg.cleanup?.provider).toBe("anthropic");
+
+    // Disk file rewritten so the migration is one-shot. Sibling fields
+    // survive the round-trip.
+    const onDisk = JSON.parse(readFileSync(path, "utf8"));
+    expect(onDisk.cleanup.provider).toBe("anthropic");
+    expect(onDisk.cleanup.default).toBe(true);
+  });
+
+  test("loadConfig() migration is idempotent across repeated loads", async () => {
+    mkdirSync(join(home, "scribe"), { recursive: true });
+    const path = join(home, "scribe", "config.json");
+    writeFileSync(path, JSON.stringify({ cleanup: { provider: "claude" } }));
+
+    await loadConfig();
+    await loadConfig();
+    const final = await loadConfig();
+    expect(final.cleanup?.provider).toBe("anthropic");
+    expect(JSON.parse(readFileSync(path, "utf8")).cleanup.provider).toBe("anthropic");
+  });
+
+  test("loadConfig() logs a one-line migration notice", async () => {
+    mkdirSync(join(home, "scribe"), { recursive: true });
+    writeFileSync(
+      join(home, "scribe", "config.json"),
+      JSON.stringify({ cleanup: { provider: "claude" } }),
+    );
+
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      await loadConfig();
+    } finally {
+      console.log = origLog;
+    }
+    expect(
+      logs.some(
+        (l) =>
+          l.includes("migrating config") &&
+          l.includes("claude") &&
+          l.includes("anthropic"),
+      ),
+    ).toBe(true);
   });
 });
