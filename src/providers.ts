@@ -3,7 +3,7 @@ import { transcribe as onnxAsr } from "./transcribe/onnx-asr.ts";
 import { transcribe as whisper } from "./transcribe/whisper.ts";
 import { transcribe as groq } from "./transcribe/groq.ts";
 import { transcribe as openai } from "./transcribe/openai.ts";
-import { cleanup as claude } from "./cleanup/claude.ts";
+import { cleanup as anthropic } from "./cleanup/anthropic.ts";
 import { cleanup as claudeCode } from "./cleanup/claude-code.ts";
 import { cleanup as ollama } from "./cleanup/ollama.ts";
 import { openai as openaiCleanup, gemini, groqCleanup, custom } from "./cleanup/openai-compat.ts";
@@ -27,8 +27,15 @@ export type Cleaner = (
   opts?: CleanerOpts,
 ) => Promise<string>;
 
+/**
+ * Cleanup provider registry. The Anthropic-API path is named `anthropic`
+ * (site#52 Part 1 cleanup-provider rename, 2026-05-21) to disambiguate from
+ * `claude-code` — the Claude Code CLI / subscription path. Legacy configs
+ * carrying `cleanupProvider: "claude"` are auto-rewritten to `"anthropic"`
+ * on load (see `migrateClaudeToAnthropic` in `config.ts`).
+ */
 export const cleaners: Record<string, Cleaner> = {
-  claude,
+  anthropic,
   "claude-code": claudeCode,
   ollama,
   openai: openaiCleanup,

@@ -1,23 +1,39 @@
-import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
+/**
+ * OpenAI-compatible cleanup providers (OpenAI, Gemini, Groq, custom).
+ *
+ * Each export reads its apiKey + model + url at call time via
+ * `getCleanupProviderConfig(<name>)`, so config.json edits via the SPA take
+ * effect on the next request without a restart.
+ */
 
-type ProviderConfig = {
-  baseUrl: string;
-  apiKey: string | undefined;
-  defaultModel: string;
+import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
+import { getCleanupProviderConfig } from "../provider-config.ts";
+
+type ProviderShape = {
+  /** Provider name as keyed in `cleaners` registry + `cleanupProviders` config block. */
+  name: string;
+  /** Base URL fallback — when neither config.json `url` nor the implicit per-provider default is set. */
+  fallbackBaseUrl: string;
 };
 
-function makeCleanup(config: ProviderConfig) {
+function makeCleanup(shape: ProviderShape) {
   return async function cleanup(
     text: string,
     properNouns?: string,
     opts?: CleanupPromptOpts,
   ): Promise<string> {
-    const apiKey = config.apiKey;
-    if (!apiKey) throw new Error(`API key not set for cleanup provider`);
+    const cfg = await getCleanupProviderConfig(shape.name);
+    const apiKey = cfg.apiKey;
+    if (!apiKey) {
+      throw new Error(
+        `${shape.name} apiKey not configured (set via /.parachute/config or the provider's API_KEY env)`,
+      );
+    }
 
-    const model = process.env.CLEANUP_MODEL ?? config.defaultModel;
+    const baseUrl = cfg.url ?? shape.fallbackBaseUrl;
+    const model = cfg.model ?? "default";
 
-    const res = await fetch(`${config.baseUrl}/chat/completions`, {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -42,26 +58,7 @@ function makeCleanup(config: ProviderConfig) {
   };
 }
 
-export const openai = makeCleanup({
-  baseUrl: "https://api.openai.com/v1",
-  get apiKey() { return process.env.OPENAI_API_KEY; },
-  defaultModel: "gpt-4o-mini",
-});
-
-export const gemini = makeCleanup({
-  baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-  get apiKey() { return process.env.GEMINI_API_KEY; },
-  defaultModel: "gemini-2.0-flash",
-});
-
-export const groqCleanup = makeCleanup({
-  baseUrl: "https://api.groq.com/openai/v1",
-  get apiKey() { return process.env.GROQ_API_KEY; },
-  defaultModel: "llama-3.1-8b-instant",
-});
-
-export const custom = makeCleanup({
-  baseUrl: process.env.CLEANUP_URL ?? "http://localhost:8080/v1",
-  get apiKey() { return process.env.CLEANUP_API_KEY; },
-  defaultModel: process.env.CLEANUP_MODEL ?? "default",
-});
+export const openai = makeCleanup({ name: "openai", fallbackBaseUrl: "https://api.openai.com/v1" });
+export const gemini = makeCleanup({ name: "gemini", fallbackBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" });
+export const groqCleanup = makeCleanup({ name: "groq", fallbackBaseUrl: "https://api.groq.com/openai/v1" });
+export const custom = makeCleanup({ name: "custom", fallbackBaseUrl: "http://localhost:8080/v1" });

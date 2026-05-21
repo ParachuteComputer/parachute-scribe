@@ -1,10 +1,13 @@
+import { getTranscribeProviderConfig } from "../provider-config.ts";
+
 export async function transcribe(audio: File): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY not set");
+  const cfg = await getTranscribeProviderConfig("groq");
+  const apiKey = cfg.apiKey;
+  if (!apiKey) throw new Error("groq apiKey not configured (set via /.parachute/config or GROQ_API_KEY env)");
 
   const form = new FormData();
   form.set("file", audio);
-  form.set("model", process.env.GROQ_MODEL ?? "whisper-large-v3");
+  form.set("model", cfg.model ?? "whisper-large-v3");
 
   const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
     method: "POST",
