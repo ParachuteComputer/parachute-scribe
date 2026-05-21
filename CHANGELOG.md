@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.4.4-rc.5] - 2026-05-21
+
+### feat(scribe): POST /admin/clear-credential endpoint (Phase 2 polish from #47)
+
+Adds `POST /admin/clear-credential/<kind>/<name>` — the only way to erase a stored writeOnly credential without hand-editing `~/.parachute/scribe/config.json`. Pairs with the PUT omit-to-keep semantics shipped in [scribe#47](https://github.com/ParachuteComputer/parachute-scribe/pull/47): PUT preserves `apiKey` when omitted (so the SPA's password input can leave the field blank to mean "keep what's there"), and this endpoint is the operator's escape hatch for "actually drop it." Flagged as Phase 2 polish on the scribe#47 + scribe#48 reviews; closes the TODO that referenced it from `config-write.ts` and `server.ts`.
+
+**Endpoint shape.**
+- `POST /admin/clear-credential/{kind}/{name}` where `kind ∈ ["transcribe", "cleanup"]` and `name` is the registry-valid provider name (e.g. `cleanup/anthropic`, `transcribe/groq`).
+- Auth: `scribe:admin` scope, inherited from the existing `/admin/*` route gate.
+- Empty body (no payload — the path segments are the whole request).
+- 200 `{ok: true, cleared: {kind, name, field: "apiKey"}, hadStoredValue: bool}` on success. `hadStoredValue` distinguishes a real clear from a no-op (clearing a provider with nothing stored still returns 200; the operator's intent — "ensure this credential is gone" — is satisfied either way).
+- 400 `{error: "invalid_kind"|"unknown_provider"|"invalid_path", message}` for bad inputs.
+- 401/403 inherited from the standard auth + scope gates.
+
+**Idempotency posture: 200 always, distinguish via `hadStoredValue`.** Chose 200-on-no-op over 404 so the SPA's "Clear" button doesn't need separate error UI for "was already cleared" vs "didn't exist." The `hadStoredValue` flag carries the distinction for callers that want to know.
+
+**Field-explicit response shape.** Today the only clearable field is `apiKey`; the response carries `field` explicitly so the wire contract can extend (e.g. claude-code `setupToken` once that flow is implemented) without reshaping callers.
+
+**Tidy on-disk shape.** When the cleared provider entry held *only* `apiKey` (no `model`/`url`), the entry is removed entirely rather than left as an empty `{}` shell. When that was the last entry in the `cleanupProviders` / `transcribeProviders` map, the whole map is dropped from the file. Mirrors the housekeeping in `mergeIntoFileShape`.
+
+**In-process sync.** After the atomic write, the in-process `scribeConfig.transcribeProviders` / `cleanupProviders` are replaced with the post-clear shape so the next transcribe/cleanup request doesn't keep using the just-cleared apiKey from memory. Same pattern PUT already uses.
+
+**Phase 2 != SPA work.** This PR ships the server-side endpoint only. Hub#300's admin SPA still has password-input fields for writeOnly credentials but no "Clear" button — that affordance is a future hub PR. Operators can hit this endpoint via `curl` today:
+
+```bash
+curl -X POST http://localhost:1943/admin/clear-credential/cleanup/anthropic \
+  -H "Authorization: Bearer $SCRIBE_AUTH_TOKEN"
+```
+
+**Test gate.** `bun test src/` — 375 pass (was 360 on rc.4), 794 expect() calls. 14 new tests covering happy path (200 + on-disk strip + in-process sync), idempotent no-op (200 + `hadStoredValue: false`), apiKey-only entry removal, transcribe-kind happy path, GET reflects post-clear state (`apiKeyConfigured` flag flips), 400 invalid_kind / unknown_provider / cross-kind name / missing segment / extra segment, 401 missing+wrong bearer in closed mode, 200 with matching shared-secret, GET-method-rejection, sibling-provider preservation. `bun run typecheck` clean. `bunx biome check .` clean.
+
+**Files touched.** `src/config-write.ts` (added `validateClearCredentialTarget` + `clearProviderCredential` + `CREDENTIAL_KINDS` / `CLEARABLE_FIELDS` exports + updated docstring), `src/server.ts` (route dispatch + `handleClearCredential` handler), `src/site-52-routes.test.ts` (14-test describe block), `package.json` version, `CHANGELOG.md`.
+
 ## [0.4.4-rc.4] - 2026-05-21
 
 ### feat(scribe): self-register manifest + installDir at startup (#38)

@@ -31,7 +31,9 @@
  *   - **Omit-to-keep PUT semantics for writeOnly credential fields.** Sending
  *     an empty string or omitting an `apiKey` field on PUT preserves the
  *     stored value. Sending a non-empty string replaces it. Explicit
- *     clearing uses `POST /admin/clear-credential/<kind>/<name>` instead.
+ *     clearing uses `POST /admin/clear-credential/<kind>/<name>` (see
+ *     `clearProviderCredential` below) — the only way to remove a stored
+ *     writeOnly value short of hand-editing `config.json`.
  *
  * Pre-0.4.4 wire fields stay supported. `cleanupDefault` (old name) is
  * still accepted on PUT and translated to `cleanupDefault` so existing
@@ -436,6 +438,125 @@ function mergeProviderMap(
     result[name] = target;
   }
   return result;
+}
+
+/**
+ * Provider kinds for `POST /admin/clear-credential/<kind>/<name>`. The kind
+ * routes the lookup to the right per-provider map; the name is the registry
+ * key inside it (e.g. `cleanup/anthropic` → `cleanupProviders.anthropic`).
+ */
+export const CREDENTIAL_KINDS = ["transcribe", "cleanup"] as const;
+export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
+
+/**
+ * Currently the only clearable writeOnly field is `apiKey`. Surfacing this
+ * as a tuple so future fields (e.g. claude-code `setupToken` once that flow
+ * lands) can be added without reshaping callers — the response always
+ * echoes `field` so the SPA knows exactly what was removed.
+ */
+export const CLEARABLE_FIELDS = ["apiKey"] as const;
+export type ClearableField = (typeof CLEARABLE_FIELDS)[number];
+
+export type ClearCredentialResult = {
+  /** True when an existing value was actually removed; false on no-op. */
+  cleared: boolean;
+  /** The post-clear config, ready to atomically persist. */
+  config: ScribeConfig;
+};
+
+/**
+ * Validate kind/name against the allowed enums + the live provider registry.
+ * Returns `null` on success or an error tuple for the route to translate
+ * into a 400 response.
+ */
+export function validateClearCredentialTarget(
+  kind: string,
+  name: string,
+): { ok: true; kind: CredentialKind; name: string } | { ok: false; error: string; message: string } {
+  if (!(CREDENTIAL_KINDS as readonly string[]).includes(kind)) {
+    return {
+      ok: false,
+      error: "invalid_kind",
+      message: `kind must be one of: ${CREDENTIAL_KINDS.join(", ")} (got "${kind}")`,
+    };
+  }
+  const validNames = kind === "transcribe" ? VALID_TRANSCRIBE_PROVIDER_NAMES : VALID_CLEANUP_PROVIDER_NAMES;
+  if (!validNames.has(name)) {
+    return {
+      ok: false,
+      error: "unknown_provider",
+      message: `unknown ${kind} provider "${name}" — known: ${Array.from(validNames).sort().join(", ")}`,
+    };
+  }
+  return { ok: true, kind: kind as CredentialKind, name };
+}
+
+/**
+ * Remove the `apiKey` field from `<kind>Providers.<name>`. Returns `cleared:
+ * false` when there was no stored value to begin with — the operator's intent
+ * ("ensure this credential is cleared") is satisfied either way, so the
+ * endpoint returns 200 idempotently and only differs in the `cleared` flag.
+ *
+ * Pairs with `mergeIntoFileShape` (PUT preserves writeOnly fields when
+ * omitted; this is the only way to remove them).
+ */
+export function clearProviderCredential(
+  existing: ScribeConfig,
+  kind: CredentialKind,
+  name: string,
+): ClearCredentialResult {
+  const mapKey = kind === "transcribe" ? "transcribeProviders" : "cleanupProviders";
+  const next: ScribeConfig = {
+    ...existing,
+    // Shallow-clone the per-provider map so we don't mutate the caller's
+    // object — the in-process scribeConfig is the same reference the
+    // running handler reads per-request.
+    transcribeProviders: existing.transcribeProviders ? { ...existing.transcribeProviders } : undefined,
+    cleanupProviders: existing.cleanupProviders ? { ...existing.cleanupProviders } : undefined,
+  };
+  const providerMap = next[mapKey];
+  const block = providerMap?.[name];
+  if (!block || block.apiKey === undefined || block.apiKey === "") {
+    // No stored credential — drop the empty/undef apiKey shell if it's there
+    // so the on-disk shape stays tidy, but report `cleared: false` for the
+    // wire response. Don't synthesize a provider entry that wasn't already
+    // there.
+    if (block && "apiKey" in block) {
+      const { apiKey: _drop, ...rest } = block;
+      if (Object.keys(rest).length === 0 && providerMap) {
+        delete providerMap[name];
+      } else if (providerMap) {
+        providerMap[name] = rest;
+      }
+    }
+    return { cleared: false, config: trimEmptyProviderMaps(next) };
+  }
+  // Real clear — strip apiKey, keep model/url. Drop the provider entry
+  // entirely if it was apiKey-only so the on-disk file doesn't accumulate
+  // empty `{}` blocks per provider that was once configured.
+  const { apiKey: _stripped, ...rest } = block;
+  if (Object.keys(rest).length === 0 && providerMap) {
+    delete providerMap[name];
+  } else if (providerMap) {
+    providerMap[name] = rest;
+  }
+  return { cleared: true, config: trimEmptyProviderMaps(next) };
+}
+
+/**
+ * Drop empty per-provider maps so the on-disk file stays tidy when the last
+ * configured provider in a kind gets its apiKey cleared. Mirrors the
+ * housekeeping in `mergeIntoFileShape`.
+ */
+function trimEmptyProviderMaps(cfg: ScribeConfig): ScribeConfig {
+  const out = { ...cfg };
+  if (out.transcribeProviders && Object.keys(out.transcribeProviders).length === 0) {
+    delete out.transcribeProviders;
+  }
+  if (out.cleanupProviders && Object.keys(out.cleanupProviders).length === 0) {
+    delete out.cleanupProviders;
+  }
+  return out;
 }
 
 /**

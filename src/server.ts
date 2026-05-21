@@ -25,10 +25,12 @@ import {
 } from "./config-schema.ts";
 import {
   buildPublicResolvedConfig,
+  clearProviderCredential,
   detectRestartRequired,
   mergeIntoFileShape,
   readExistingConfig,
   toFileShape,
+  validateClearCredentialTarget,
   validateConfig,
   writeConfigFileAtomic,
 } from "./config-write.ts";
@@ -160,10 +162,13 @@ async function route(
     return new Response("Not found", { status: 404 });
   }
 
-  // Admin actions live under /admin/* — refresh-claude-token-status is the
-  // only one shipped in 0.4.4-rc.1; clear-credential follows in Phase 2.
+  // Admin actions live under /admin/* — refresh-claude-token-status and
+  // clear-credential (Phase 2 polish from scribe#47).
   if (internalPath === "/admin/refresh-claude-token-status" && req.method === "POST") {
     return handleRefreshSetupTokenStatus(deps);
+  }
+  if (internalPath.startsWith("/admin/clear-credential/") && req.method === "POST") {
+    return handleClearCredential(internalPath, deps);
   }
   if (internalPath.startsWith("/admin/") && req.method !== "GET") {
     return Response.json({ error: "Not found" }, { status: 404 });
@@ -240,6 +245,107 @@ function handleConfigGet(deps: ServerDeps): Response {
 function handleRefreshSetupTokenStatus(deps: ServerDeps): Response {
   const status = (deps.setupTokenStatusFn ?? readSetupTokenStatus)();
   return Response.json({ setupTokenStatus: status });
+}
+
+/**
+ * `POST /admin/clear-credential/<kind>/<name>` — remove the stored
+ * writeOnly `apiKey` for a provider. Pairs with PUT /.parachute/config's
+ * omit-to-keep semantics: PUT preserves apiKey when omitted, so this
+ * endpoint is the only way to actually erase a stored credential without
+ * hand-editing `config.json`.
+ *
+ * - 200 `{ok: true, cleared: {kind, name, field}, hadStoredValue: bool}`
+ *   on success. Idempotent: clearing a provider with no stored apiKey still
+ *   returns 200, with `hadStoredValue: false` to distinguish the no-op.
+ * - 400 `{error: "invalid_kind"|"unknown_provider", message}` for bad path
+ *   segments (kind not in enum, name not in the provider registry).
+ * - 401/403 inherited from the standard auth gate (scribe:admin scope).
+ *
+ * Phase 2 polish from scribe#47 + #48 reviews. Today the only clearable
+ * `field` is `apiKey`; the response carries `field` explicitly so future
+ * additions (e.g. claude-code `setupToken`) can extend without reshaping
+ * the wire contract.
+ */
+async function handleClearCredential(
+  internalPath: string,
+  deps: ServerDeps,
+): Promise<Response> {
+  // Path is `/admin/clear-credential/<kind>/<name>` — anything past the
+  // two segments is a bad request (no field-targeting yet; apiKey is the
+  // only clearable field for now).
+  const suffix = internalPath.slice("/admin/clear-credential/".length);
+  const parts = suffix.split("/").filter((s) => s.length > 0);
+  if (parts.length !== 2) {
+    return Response.json(
+      {
+        error: "invalid_path",
+        message:
+          "expected /admin/clear-credential/<kind>/<name> — e.g. /admin/clear-credential/cleanup/anthropic",
+      },
+      { status: 400 },
+    );
+  }
+  const [kindRaw, nameRaw] = parts;
+  // Decode in case the SPA URL-encoded a provider name with special chars.
+  let kind: string;
+  let name: string;
+  try {
+    kind = decodeURIComponent(kindRaw!);
+    name = decodeURIComponent(nameRaw!);
+  } catch {
+    return Response.json(
+      { error: "invalid_path", message: "malformed URL encoding in path" },
+      { status: 400 },
+    );
+  }
+  const validation = validateClearCredentialTarget(kind, name);
+  if (!validation.ok) {
+    return Response.json(
+      { error: validation.error, message: validation.message },
+      { status: 400 },
+    );
+  }
+
+  const path = deps.configPath ?? resolveDefaultConfigPath();
+  let existing: ScribeConfig;
+  try {
+    existing = readExistingConfig(path);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scribe] clear-credential config read failed (${path}): ${message}`);
+    return Response.json(
+      { error: "read_failed", message: `failed to read ${path}: ${message}` },
+      { status: 500 },
+    );
+  }
+
+  const { cleared, config: nextConfig } = clearProviderCredential(
+    existing,
+    validation.kind,
+    validation.name,
+  );
+
+  try {
+    writeConfigFileAtomic(path, nextConfig);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scribe] clear-credential config write failed (${path}): ${message}`);
+    return Response.json(
+      { error: "write_failed", message: `failed to write ${path}: ${message}` },
+      { status: 500 },
+    );
+  }
+
+  // Sync the in-process scribeConfig so the next transcribe/cleanup request
+  // doesn't keep using the just-cleared apiKey from memory.
+  deps.scribeConfig.transcribeProviders = nextConfig.transcribeProviders;
+  deps.scribeConfig.cleanupProviders = nextConfig.cleanupProviders;
+
+  return Response.json({
+    ok: true,
+    cleared: { kind: validation.kind, name: validation.name, field: "apiKey" },
+    hadStoredValue: cleared,
+  });
 }
 
 /**
