@@ -1,3 +1,23 @@
+/**
+ * Self-registration into `~/.parachute/services.json` on `parachute-scribe
+ * serve` boot.
+ *
+ * Mirrors `parachute-runner/src/services-manifest.ts` and
+ * `parachute-agent/src/web/services-manifest.ts` deliberately — the file
+ * shape is the contract between every Parachute module and the hub
+ * (`parachute-hub/src/services-manifest.ts` is the canonical reader).
+ *
+ * Failure mode: any write error is logged + swallowed by the caller. Self-
+ * registration is best-effort — the daemon still serves locally even if
+ * the manifest write fails (permissions, disk full, race with another
+ * writer, malformed pre-existing file).
+ *
+ * `installDir` is the third-party-module hook (parachute-hub#84): hub
+ * looks the field up to resolve `parachute restart scribe` back to the
+ * checkout it should drive. Self-registering it here means scribe doesn't
+ * need a vendored fallback in hub once vault#266 + runner#3 + scribe#38
+ * retire `SCRIBE_FALLBACK` from `parachute-hub/src/service-spec.ts`.
+ */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,10 +30,12 @@ export interface ServiceEntry {
   version: string;
   displayName?: string;
   tagline?: string;
+  installDir?: string;
   /**
-   * Hub-stamped fields (e.g. `installDir` from parachute-hub#84) ride on the
-   * row even though scribe itself never sets them. We merge rather than
-   * replace on upsert so they survive scribe's self-registration writes.
+   * Hub-stamped fields (e.g. `installDir` from parachute-hub#84, future
+   * uiUrl / managementUrl pass-throughs) ride on the row even though scribe
+   * itself doesn't author them. The upsert merges rather than replaces so
+   * those survive a self-registration write.
    */
   [key: string]: unknown;
 }
@@ -22,8 +44,14 @@ interface ServicesManifest {
   services: ServiceEntry[];
 }
 
-export function resolveManifestPath(): string {
-  const base = process.env.PARACHUTE_HOME ?? join(homedir(), ".parachute");
+/**
+ * Canonical location of `services.json`. Honors `PARACHUTE_HOME` for sandbox
+ * + Render deployments (matches the convention every other committed-core
+ * module follows). The `env` argument is injectable so tests can drive
+ * resolution without mutating `process.env`.
+ */
+export function resolveManifestPath(env: Record<string, string | undefined> = process.env): string {
+  const base = env.PARACHUTE_HOME ?? join(env.HOME ?? homedir(), ".parachute");
   return join(base, "services.json");
 }
 
@@ -54,17 +82,21 @@ export function readServiceEntry(
   return manifest.services.find((s) => s.name === name);
 }
 
-export function upsertService(
-  entry: ServiceEntry,
-  path: string = resolveManifestPath(),
-): void {
+/**
+ * Idempotent upsert of a service entry. Merges into any existing row rather
+ * than replacing it — preserves hub-stamped fields the module doesn't own
+ * (`installDir` from hub#84, future uiUrl, etc.). The module still wins for
+ * the fields it owns (port, paths, version, health, displayName, installDir
+ * — because `entry` spreads last in the merge).
+ *
+ * Atomic write: stages to `<path>.tmp-<pid>-<now>`, then renames over the
+ * target. A crash mid-write leaves the prior file intact rather than
+ * corrupting it.
+ */
+export function upsertService(entry: ServiceEntry, path: string = resolveManifestPath()): void {
   mkdirSync(dirname(path), { recursive: true });
   const manifest = readManifest(path);
   const idx = manifest.services.findIndex((s) => s.name === entry.name);
-  // Merge rather than replace so fields the hub stamps onto the row
-  // (`installDir` from parachute-hub#84, etc.) survive a self-registration
-  // pass. Scribe still wins for the fields it owns — port, paths, version,
-  // health — because they spread last.
   if (idx >= 0) manifest.services[idx] = { ...manifest.services[idx], ...entry };
   else manifest.services.push(entry);
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;

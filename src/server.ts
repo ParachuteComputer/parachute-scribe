@@ -13,13 +13,9 @@ import {
   type FetchedAudio,
 } from "./url-fetch.ts";
 import { handleScribeMcp } from "./mcp/http.ts";
-import { upsertService } from "./services-manifest.ts";
+import { resolveProjectRoot, selfRegister } from "./self-register.ts";
 import { resolvePort } from "./port-resolve.ts";
 import {
-  DISPLAY_NAME,
-  MOUNT_PATH,
-  SERVICE_NAME,
-  TAGLINE,
   handleParachuteIcon,
   handleParachuteInfo,
 } from "./parachute-info.ts";
@@ -47,8 +43,6 @@ import {
   isAuthRequired,
   warnIfTokenLooksJwt,
 } from "./auth.ts";
-import pkg from "../package.json" with { type: "json" };
-
 export type ServerDeps = {
   transcribe: ((file: File) => Promise<string>) | null;
   cleanup: Cleaner;
@@ -592,19 +586,17 @@ export async function startServer(opts: StartServerOptions = {}) {
     throw err;
   }
 
-  try {
-    upsertService({
-      name: SERVICE_NAME,
-      port: PORT,
-      paths: [MOUNT_PATH],
-      health: "/health",
-      version: pkg.version,
-      displayName: DISPLAY_NAME,
-      tagline: TAGLINE,
-    });
-  } catch (err) {
-    console.warn(
-      `scribe: skipped services manifest update: ${err instanceof Error ? err.message : err}`,
-    );
-  }
+  // Self-register into `~/.parachute/services.json` so `parachute status`,
+  // `parachute restart scribe`, hub's admin SPA module catalog, and the
+  // live `/.well-known/parachute.json` builder see scribe without an
+  // operator step. Best-effort: a failure here doesn't block the daemon
+  // from serving locally — `selfRegister` swallows the error and logs.
+  // The helper reads `.parachute/module.json` for the canonical paths /
+  // health / displayName / tagline / stripPrefix shape (scribe#38), and
+  // honors a pre-existing services.json port so an operator override
+  // survives restarts (scribe#40 / paraclaw#145).
+  selfRegister({
+    boundPort: PORT,
+    installDir: resolveProjectRoot(),
+  });
 }
