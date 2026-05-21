@@ -24,8 +24,12 @@
  *     `validateConfig` behavior — typos on the wire 400 rather than silently
  *     no-op).
  *
- *   - **`$ref: "#/definitions/apiKeyAndModel"`** consolidates the boilerplate
- *     for cleanup providers that share the same shape (OpenAI / Gemini / Groq).
+ *   - **Inline per-provider blocks (no `$ref`).** Hub's admin SPA
+ *     (`ModuleConfig.tsx`) walks `schema.properties` directly without
+ *     dereferencing `$ref`, so a `{ $ref }` block would hide `writeOnly` on
+ *     `apiKey` and break the password-input rendering. The
+ *     `apiKeyAndModel` definition is retained for downstream validator
+ *     consumers but not used inside this schema.
  *
  * Provider lists come from `providers.ts` registries — single source of truth
  * for "what's available." The schema enumerates each provider twice (once in
@@ -80,8 +84,6 @@ export type ProviderConfigPublic = {
   /** Indicates the SPA can render "key stored — leave blank to keep" placeholder. */
   apiKeyConfigured?: boolean;
 };
-
-const API_KEY_AND_MODEL_REF = { $ref: "#/definitions/apiKeyAndModel" } as const;
 
 /**
  * Per-provider transcription block specs. Local-only providers (parakeet-mlx,
@@ -165,9 +167,33 @@ function cleanupProviderBlocks(): Record<string, unknown> {
         model: { type: "string", title: "Model", default: "gemma4:e4b" },
       },
     },
-    openai: { ...API_KEY_AND_MODEL_REF, title: "OpenAI (cleanup)" },
-    gemini: { ...API_KEY_AND_MODEL_REF, title: "Google Gemini" },
-    groq: { ...API_KEY_AND_MODEL_REF, title: "Groq (cleanup)" },
+    openai: {
+      type: "object",
+      additionalProperties: false,
+      title: "OpenAI (cleanup)",
+      properties: {
+        apiKey: { type: "string", writeOnly: true, title: "OpenAI API key" },
+        model: { type: "string", title: "Model" },
+      },
+    },
+    gemini: {
+      type: "object",
+      additionalProperties: false,
+      title: "Google Gemini",
+      properties: {
+        apiKey: { type: "string", writeOnly: true, title: "Gemini API key" },
+        model: { type: "string", title: "Model" },
+      },
+    },
+    groq: {
+      type: "object",
+      additionalProperties: false,
+      title: "Groq (cleanup)",
+      properties: {
+        apiKey: { type: "string", writeOnly: true, title: "Groq API key" },
+        model: { type: "string", title: "Model" },
+      },
+    },
     custom: {
       type: "object",
       additionalProperties: false,

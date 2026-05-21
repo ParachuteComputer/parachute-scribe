@@ -144,6 +144,11 @@ describe("config-schema — site#52 Part 1 additions", () => {
     };
     expect(cp.properties.anthropic?.properties?.apiKey?.writeOnly).toBe(true);
     expect(cp.properties.custom?.properties?.apiKey?.writeOnly).toBe(true);
+    // Cleanup OpenAI/Gemini/Groq are inline (no $ref) so the SPA — which
+    // doesn't dereference $ref — can see writeOnly directly on apiKey.
+    expect(cp.properties.openai?.properties?.apiKey?.writeOnly).toBe(true);
+    expect(cp.properties.gemini?.properties?.apiKey?.writeOnly).toBe(true);
+    expect(cp.properties.groq?.properties?.apiKey?.writeOnly).toBe(true);
   });
 
   test("claude-code.setupTokenStatus is readOnly + has the four-value enum", () => {
@@ -156,15 +161,30 @@ describe("config-schema — site#52 Part 1 additions", () => {
     expect(status?.enum).toEqual(["configured", "not-configured", "expired", "unknown"]);
   });
 
-  test("apiKeyAndModel $ref consolidates the openai/gemini/groq cleanup shapes", () => {
+  test("cleanup openai/gemini/groq blocks are inline (no $ref) so hub's SPA renders writeOnly correctly", () => {
     const schema = buildConfigSchema();
-    expect(schema.definitions?.apiKeyAndModel).toBeDefined();
     const cp = schema.properties.cleanupProviders as {
-      properties: Record<string, { $ref?: string } | undefined>;
+      properties: Record<
+        string,
+        | {
+            $ref?: string;
+            type?: string;
+            properties?: Record<string, { type?: string; writeOnly?: boolean; title?: string }>;
+          }
+        | undefined
+      >;
     };
-    expect(cp.properties.openai?.$ref).toBe("#/definitions/apiKeyAndModel");
-    expect(cp.properties.gemini?.$ref).toBe("#/definitions/apiKeyAndModel");
-    expect(cp.properties.groq?.$ref).toBe("#/definitions/apiKeyAndModel");
+    for (const name of ["openai", "gemini", "groq"] as const) {
+      const block = cp.properties[name];
+      expect(block?.$ref).toBeUndefined();
+      expect(block?.type).toBe("object");
+      expect(block?.properties?.apiKey?.type).toBe("string");
+      expect(block?.properties?.apiKey?.writeOnly).toBe(true);
+      expect(block?.properties?.model?.type).toBe("string");
+    }
+    // The apiKeyAndModel definition is retained for downstream JSON Schema
+    // validator consumers — it just isn't referenced inside this schema.
+    expect(schema.definitions?.apiKeyAndModel).toBeDefined();
   });
 
   test("top-level additionalProperties: false rejects typos on the wire", () => {
