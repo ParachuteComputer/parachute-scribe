@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.4-rc.4] - 2026-05-21
+
+### feat(scribe): self-register manifest + installDir at startup (#38)
+
+Closes [#38](https://github.com/ParachuteComputer/parachute-scribe/issues/38). On `parachute-scribe serve` boot, scribe now reads its own `.parachute/module.json` and atomically upserts its row in `~/.parachute/services.json` — stamping `installDir`, paths/health/displayName/tagline/stripPrefix from the manifest, version from `package.json`. Mirrors the pattern already shipped in [vault#266](https://github.com/ParachuteComputer/parachute-vault/pull/266) and [runner#3](https://github.com/ParachuteComputer/parachute-runner/pull/3).
+
+**Why this exists.** Hub-as-supervisor (v0.6) reads `~/.parachute/services.json` to know which modules exist on the host. Before this PR, scribe relied on the `bun link` install path (or hub's vendored `SCRIBE_FALLBACK` manifest) to stamp `installDir`. A `bun link`-mode dev tree that never went through `parachute install scribe` was missing the field, leaving `parachute restart scribe` unable to resolve back to the checkout. Self-registration closes that gap — scribe's manifest is now the single source of truth.
+
+**Operator-override discipline preserved.** Per [scribe#40](https://github.com/ParachuteComputer/parachute-scribe/issues/40) / [paraclaw#145](https://github.com/ParachuteComputer/parachute-agent/issues/145): if services.json already has a row for `parachute-scribe`, the existing `port` survives the write — operator (or hub) overrides are not silently restamped. First-boot writes the bound port; subsequent boots preserve.
+
+**Hub-stamped fields ride through.** `upsertService` merges rather than replaces, so any field hub stamps onto the row (`installDir` from [parachute-hub#84](https://github.com/ParachuteComputer/parachute-hub/issues/84), future `uiUrl` / `managementUrl`) survives every self-registration pass. We do re-stamp our own `installDir` so it follows the live checkout after a `git pull` moves the package root.
+
+**Graceful failure.** All four read/write boundaries (missing module.json, malformed module.json, malformed services.json, unwritable target) return `{ok: false}` with a `[scribe]` warn log rather than throwing. The daemon serves locally even when the discoverability bookkeeping fails — the symptom is "scribe doesn't appear in `parachute status` until the underlying issue clears."
+
+**`SCRIBE_FALLBACK` retirement deferred.** Hub's `FIRST_PARTY_FALLBACKS[scribe]` stays in place this release; it retires in a future hub PR after all four committed-core modules (vault/notes/scribe/runner) are confirmed self-registering reliably across the install matrix. Additive change — no hub coordination required for this PR to ship.
+
+**New files.** `src/self-register.ts` (helper + `resolveProjectRoot`), `src/self-register.test.ts` (14 new tests covering first-boot, subsequent-boot port preservation, hub-stamped field merge, idempotency, sibling preservation, and the four graceful-failure modes). `src/services-manifest.ts` refactored to mirror runner's env-injection shape on `resolveManifestPath(env?)`. `.parachute/module.json` gained explicit `stripPrefix: true` (was implicit via hub's `SCRIBE_FALLBACK`).
+
+**Test gate.** `bun test src/` — 360 pass (was 344 on rc.3), 749 expect() calls. `bun run typecheck` clean.
+
 ## [0.4.4-rc.3] - 2026-05-21
 
 ### feat(scribe): accept --mount flag for prefix-stripping uniform with notes-serve (#39)

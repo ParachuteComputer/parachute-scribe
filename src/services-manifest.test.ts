@@ -162,4 +162,16 @@ describe("services-manifest", () => {
       else process.env.PARACHUTE_HOME = orig;
     }
   });
+
+  describe("resolveManifestPath — env injection", () => {
+    test("honors PARACHUTE_HOME from the injected env", () => {
+      const p = resolveManifestPath({ PARACHUTE_HOME: "/tmp/parachute-home-override" });
+      expect(p).toBe("/tmp/parachute-home-override/services.json");
+    });
+
+    test("falls back to $HOME/.parachute when PARACHUTE_HOME unset", () => {
+      const p = resolveManifestPath({ HOME: "/Users/test-home" });
+      expect(p).toBe("/Users/test-home/.parachute/services.json");
+    });
+  });
 });
