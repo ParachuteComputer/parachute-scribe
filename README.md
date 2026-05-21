@@ -36,7 +36,7 @@ Audio (wav/mp3/m4a) --> Transcription engine --> Raw text --> LLM cleanup (optio
 
 ```bash
 parachute-scribe <file>                   # Transcribe a file
-parachute-scribe <file> --cleanup claude  # Transcribe + LLM cleanup
+parachute-scribe <file> --cleanup anthropic  # Transcribe + LLM cleanup (Anthropic API)
 parachute-scribe <file> --transcribe groq # Use a specific transcription provider
 parachute-scribe <file> --no-cleanup      # Skip cleanup even if configured
 parachute-scribe <file> --json            # Output JSON: {"text": "..."}
@@ -50,7 +50,7 @@ parachute-scribe providers                # List available providers
 import { transcribe } from "@openparachute/scribe";
 
 const text = await transcribe(audioFile);
-const cleaned = await transcribe(audioFile, { cleanup: "claude" });
+const cleaned = await transcribe(audioFile, { cleanup: "anthropic" });
 ```
 
 Check available providers:
@@ -108,7 +108,8 @@ Optional LLM pass that fixes transcription artifacts — filler words, punctuati
 
 | Provider | Type | Notes |
 |----------|------|-------|
-| `claude` | Cloud | High quality. Requires `ANTHROPIC_API_KEY`. |
+| `anthropic` | Cloud | Anthropic API. Requires `ANTHROPIC_API_KEY` (or set via the admin SPA). Renamed from `claude` in 0.4.4 — legacy configs auto-migrate. |
+| `claude-code` | Local CLI | Subscription-funded Claude via the [Claude Code CLI](https://claude.com/claude-code). No API key — run `claude setup-token` on the host. |
 | `ollama` | Local | Free, no API key. Requires Ollama running. |
 | `openai` | Cloud | GPT-based. Requires `OPENAI_API_KEY`. |
 | `gemini` | Cloud | Requires `GEMINI_API_KEY`. |

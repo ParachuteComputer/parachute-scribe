@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.4.4-rc.1] - 2026-05-21
+
+### feat(scribe): admin SPA configurable transcription + cleanup providers (schema + per-request key reads + migration shim)
+
+Part 1 of [site#52](https://github.com/ParachuteComputer/parachute.computer/issues/52) — extends scribe's `.parachute/config` surface so the hub admin SPA (hub#260 / hub#300) can configure per-provider API keys, model selection, and the `claude setup-token` status flow end-to-end. Companion to [hub#300](https://github.com/ParachuteComputer/parachute-hub/issues/300)'s SPA.
+
+#### Schema
+
+- New top-level `transcribeProviders` and `cleanupProviders` objects on the JSON Schema served at `/.parachute/config/schema`. Each per-provider block carries the keys that provider supports — `apiKey` (`writeOnly: true`), `model`, `url` (for self-hosted endpoints). The SPA renders each per-provider section under the matching dropdown.
+- `apiKey` fields are `writeOnly: true` across the board. **`GET /.parachute/config` OMITS them from the response** (omit-to-keep contract per hub#300; no `"***"` sentinel the SPA has to special-case). Instead the GET response carries `apiKeyConfigured: true` per block so the SPA can render "[stored — leave blank to keep]" without seeing the secret.
+- `cleanupProviders["claude-code"].setupTokenStatus` is a `readOnly` enum (`configured | not-configured | expired | unknown`) populated per-request from `~/.claude.json`. The new `POST /admin/refresh-claude-token-status` endpoint re-reads the file and returns `{setupTokenStatus: ...}` — the SPA's Refresh button hits this.
+- Cleanup provider rename: **`claude` → `anthropic`** (the Anthropic API path is now named after the credential, not the model family) plus the existing `claude-code` (Claude Code CLI / subscription). The schema's `cleanupProvider` enum drops `claude` entirely.
+- Schema top-level `additionalProperties: false` enforced — typo'd field names on PUT now 400 rather than silently no-op.
+
+#### Migration shim
+
+- On config load (`loadConfig()` in `config.ts`), any `cleanup.provider === "claude"` is auto-rewritten to `"anthropic"`, the rewrite is persisted to disk (one-shot — idempotent across loads), and a one-line migration notice is logged. Existing operators don't have to touch their `config.json` for the next start.
+
+#### Per-request API-key reads
+
+- New `src/provider-config.ts` consolidates the resolved-config logic. Every provider (`transcribe/groq.ts`, `cleanup/anthropic.ts`, `cleanup/ollama.ts`, etc.) now reads its apiKey/model/url **per-call** via `getTranscribeProviderConfig(name)` / `getCleanupProviderConfig(name)`. Precedence: `config.json` > env > built-in default. Matches hub#298's `getHubOrigin` precedence shape.
+- The "paste apiKey in SPA, click Save, next request uses the new value" UX claim is now load-bearing pinned by `provider-config.test.ts` — rewriting `config.json` between two `getTranscribeProviderConfig` calls returns the new value on the second call. No restart.
+
+#### Graceful missing-provider
+
+- `POST /v1/audio/transcriptions` on a fresh deploy with no transcribe provider configured returns `{error: "no transcription provider configured", error_code: "missing_provider"}` with status 400. Vault's auto-transcribe (vault#343) can branch on `error_code` to surface a `transcript_status: failed` note with a clean message.
+
+#### Provider files
+
+- `src/cleanup/claude.ts` → `src/cleanup/anthropic.ts` (git mv; module-scope export name follows). `providers.ts` registers the new name; the registry no longer carries `claude` at all.
+- New `src/claude-token-status.ts` reads `~/.claude.json` (honors `CLAUDE_CONFIG_DIR`) and produces the four-value status enum. Permissive shape detection — looks for `oauthAccount.accessToken` / top-level `accessToken` / `tokens.<provider>.accessToken`; expired when an `expiresAt` is in the past.
+
+#### Auth + scope
+
+- `/.parachute/config*` and `/admin/refresh-claude-token-status` both gate on `scribe:admin`. Hub's `/api/modules/scribe/config*` mints a fresh `scribe:admin` JWT per-request (per hub#300) so this works through the SPA without exposing the master scope to scribe.
+
+#### Tests
+
+- 261/261 passing (was 204 baseline) — 57 new tests across:
+  - `src/provider-config.test.ts` — precedence + per-request reads (live config-file rewrite test)
+  - `src/claude-token-status.test.ts` — every status enum value path
+  - `src/config-schema.test.ts` — new top-level structure, writeOnly/readOnly fields, $ref consolidation, `claude` enum removal
+  - `src/config.test.ts` — migration shim (pure function + load round-trip + idempotence + log assertion)
+  - `src/site-52-routes.test.ts` — wire-level GET omission, PUT omit-to-keep, refresh endpoint, missing-provider 400
+- Typecheck clean. Biome clean.
+
+#### Notes
+
+- File on disk shape stays back-compat: pre-0.4.4 configs (no `transcribeProviders`/`cleanupProviders` blocks) keep working — providers fall through env+default for any unset value, same as before.
+- `cleanupDefault` retains its name on the wire (the design doc's "additive — every existing field keeps its name" principle); `cleanupEnabled` is **not** introduced.
+- The `apiKeyConfigured` boolean is new wire — surfaces "key stored, leave blank to keep" UX to the SPA without exposing the secret.
+
 ## [0.4.3] - 2026-05-20
 
 Stable release. Cumulative changes since `0.4.2`:
