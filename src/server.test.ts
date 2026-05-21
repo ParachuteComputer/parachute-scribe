@@ -6,8 +6,10 @@ import type { ScribeConfig } from "./config.ts";
 
 const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
+  transcribeProviders: {},
   cleanupProvider: "none",
   cleanupDefault: false,
+  cleanupProviders: {},
   cleanupSystemPrompt: null,
   cleanupContextTemplate: null,
   port: 1943,
@@ -104,7 +106,16 @@ describe("createFetchHandler — auth gate", () => {
         }),
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual(RESOLVED);
+      // GET /.parachute/config returns the resolved-config shape — top-level
+      // boot fields match RESOLVED; the per-provider blocks are computed
+      // per-request and exercised in dedicated tests.
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.transcribeProvider).toBe(RESOLVED.transcribeProvider);
+      expect(body.cleanupProvider).toBe(RESOLVED.cleanupProvider);
+      expect(body.cleanupDefault).toBe(RESOLVED.cleanupDefault);
+      expect(body.port).toBe(RESOLVED.port);
+      expect(body.transcribeProviders).toBeDefined();
+      expect(body.cleanupProviders).toBeDefined();
     });
 
     test("/v1/audio/transcriptions returns 401 without a token", async () => {
@@ -131,7 +142,7 @@ describe("createFetchHandler — auth gate", () => {
 describe("createFetchHandler — cleanup failure behavior", () => {
   const CLEANUP_RESOLVED: ResolvedConfig = {
     ...RESOLVED,
-    cleanupProvider: "claude",
+    cleanupProvider: "anthropic",
     cleanupDefault: true,
   };
 
@@ -219,7 +230,7 @@ describe("createFetchHandler — cleanup failure behavior", () => {
 describe("createFetchHandler — context-in-payload (only source of proper nouns)", () => {
   const CLEANUP_RESOLVED: ResolvedConfig = {
     ...RESOLVED,
-    cleanupProvider: "claude",
+    cleanupProvider: "anthropic",
     cleanupDefault: true,
   };
   const EMPTY_CONFIG: ScribeConfig = {};

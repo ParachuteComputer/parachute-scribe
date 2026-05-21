@@ -10,8 +10,10 @@ import {
 
 const SAMPLE: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
+  transcribeProviders: {},
   cleanupProvider: "ollama",
   cleanupDefault: true,
+  cleanupProviders: {},
   cleanupSystemPrompt: null,
   cleanupContextTemplate: null,
   port: 1943,
@@ -88,5 +90,105 @@ describe("config-schema", () => {
     expect(template.type).toBe("string");
     expect(template.description).toBeString();
     expect(template.description).toContain("{{proper_nouns}}");
+  });
+});
+
+describe("config-schema — site#52 Part 1 additions", () => {
+  test("schema has transcribeProviders + cleanupProviders top-level objects", () => {
+    const schema = buildConfigSchema();
+    expect(schema.properties.transcribeProviders).toBeDefined();
+    expect((schema.properties.transcribeProviders as { type: string }).type).toBe("object");
+    expect(schema.properties.cleanupProviders).toBeDefined();
+    expect((schema.properties.cleanupProviders as { type: string }).type).toBe("object");
+  });
+
+  test("transcribeProviders contains a block per registered transcriber", () => {
+    const schema = buildConfigSchema();
+    const tp = schema.properties.transcribeProviders as {
+      properties: Record<string, unknown>;
+    };
+    for (const name of ["parakeet-mlx", "onnx-asr", "whisper", "groq", "openai"]) {
+      expect(tp.properties[name]).toBeDefined();
+    }
+  });
+
+  test("cleanupProviders.anthropic + claude-code are present (renamed away from 'claude')", () => {
+    const schema = buildConfigSchema();
+    const cp = schema.properties.cleanupProviders as {
+      properties: Record<string, unknown>;
+    };
+    expect(cp.properties.anthropic).toBeDefined();
+    expect(cp.properties["claude-code"]).toBeDefined();
+    // Legacy 'claude' is no longer in the cleanupProviders block.
+    expect(cp.properties.claude).toBeUndefined();
+  });
+
+  test("cleanupProvider enum no longer includes 'claude' (renamed)", () => {
+    const schema = buildConfigSchema();
+    const cp = schema.properties.cleanupProvider as { enum: string[] };
+    expect(cp.enum).toContain("anthropic");
+    expect(cp.enum).toContain("claude-code");
+    expect(cp.enum).not.toContain("claude");
+  });
+
+  test("apiKey fields are writeOnly across every credential-bearing block", () => {
+    const schema = buildConfigSchema();
+    const tp = schema.properties.transcribeProviders as {
+      properties: Record<string, { properties?: Record<string, { writeOnly?: boolean }> } | undefined>;
+    };
+    expect(tp.properties.groq?.properties?.apiKey?.writeOnly).toBe(true);
+    expect(tp.properties.openai?.properties?.apiKey?.writeOnly).toBe(true);
+
+    const cp = schema.properties.cleanupProviders as {
+      properties: Record<string, { properties?: Record<string, { writeOnly?: boolean }> } | undefined>;
+    };
+    expect(cp.properties.anthropic?.properties?.apiKey?.writeOnly).toBe(true);
+    expect(cp.properties.custom?.properties?.apiKey?.writeOnly).toBe(true);
+    // Cleanup OpenAI/Gemini/Groq are inline (no $ref) so the SPA — which
+    // doesn't dereference $ref — can see writeOnly directly on apiKey.
+    expect(cp.properties.openai?.properties?.apiKey?.writeOnly).toBe(true);
+    expect(cp.properties.gemini?.properties?.apiKey?.writeOnly).toBe(true);
+    expect(cp.properties.groq?.properties?.apiKey?.writeOnly).toBe(true);
+  });
+
+  test("claude-code.setupTokenStatus is readOnly + has the four-value enum", () => {
+    const schema = buildConfigSchema();
+    const cp = schema.properties.cleanupProviders as {
+      properties: Record<string, { properties?: Record<string, { readOnly?: boolean; enum?: string[] }> } | undefined>;
+    };
+    const status = cp.properties["claude-code"]?.properties?.setupTokenStatus;
+    expect(status?.readOnly).toBe(true);
+    expect(status?.enum).toEqual(["configured", "not-configured", "expired", "unknown"]);
+  });
+
+  test("cleanup openai/gemini/groq blocks are inline (no $ref) so hub's SPA renders writeOnly correctly", () => {
+    const schema = buildConfigSchema();
+    const cp = schema.properties.cleanupProviders as {
+      properties: Record<
+        string,
+        | {
+            $ref?: string;
+            type?: string;
+            properties?: Record<string, { type?: string; writeOnly?: boolean; title?: string }>;
+          }
+        | undefined
+      >;
+    };
+    for (const name of ["openai", "gemini", "groq"] as const) {
+      const block = cp.properties[name];
+      expect(block?.$ref).toBeUndefined();
+      expect(block?.type).toBe("object");
+      expect(block?.properties?.apiKey?.type).toBe("string");
+      expect(block?.properties?.apiKey?.writeOnly).toBe(true);
+      expect(block?.properties?.model?.type).toBe("string");
+    }
+    // The apiKeyAndModel definition is retained for downstream JSON Schema
+    // validator consumers — it just isn't referenced inside this schema.
+    expect(schema.definitions?.apiKeyAndModel).toBeDefined();
+  });
+
+  test("top-level additionalProperties: false rejects typos on the wire", () => {
+    const schema = buildConfigSchema();
+    expect(schema.additionalProperties).toBe(false);
   });
 });

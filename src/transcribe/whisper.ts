@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { getTranscribeProviderConfig } from "../provider-config.ts";
 
 export async function transcribe(audio: File): Promise<string> {
   const id = crypto.randomUUID();
@@ -9,7 +10,8 @@ export async function transcribe(audio: File): Promise<string> {
   await Bun.write(tmpFile, audio);
 
   try {
-    const model = process.env.WHISPER_MODEL ?? "small";
+    const cfg = await getTranscribeProviderConfig("whisper");
+    const model = cfg.model ?? "small";
 
     const result = await $`whisper-ctranslate2 ${tmpFile} --model ${model} --output_format txt --output_dir ${tmpDir}`
       .nothrow()

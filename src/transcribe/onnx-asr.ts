@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { getTranscribeProviderConfig } from "../provider-config.ts";
 
 export async function transcribe(audio: File): Promise<string> {
   const id = crypto.randomUUID();
@@ -17,7 +18,8 @@ export async function transcribe(audio: File): Promise<string> {
       await $`cp ${tmpFile} ${wavFile}`.quiet();
     }
 
-    const model = process.env.ONNX_ASR_MODEL ?? "nemo-parakeet-tdt-0.6b-v3";
+    const cfg = await getTranscribeProviderConfig("onnx-asr");
+    const model = cfg.model ?? "nemo-parakeet-tdt-0.6b-v3";
 
     // Use --vad silero for audio over ~20s (Parakeet's context limit)
     const result = await $`onnx-asr ${model} --vad silero ${wavFile}`

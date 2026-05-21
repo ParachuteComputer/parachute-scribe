@@ -23,8 +23,10 @@ import type { ResolvedConfig } from "./config-schema.ts";
 
 const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
+  transcribeProviders: {},
   cleanupProvider: "none",
   cleanupDefault: true,
+  cleanupProviders: {},
   cleanupSystemPrompt: null,
   cleanupContextTemplate: null,
   port: 1943,

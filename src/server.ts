@@ -14,10 +14,10 @@ import {
 } from "./parachute-info.ts";
 import {
   type ResolvedConfig,
-  handleConfig,
   handleConfigSchema,
 } from "./config-schema.ts";
 import {
+  buildPublicResolvedConfig,
   detectRestartRequired,
   mergeIntoFileShape,
   readExistingConfig,
@@ -25,6 +25,7 @@ import {
   validateConfig,
   writeConfigFileAtomic,
 } from "./config-write.ts";
+import { readSetupTokenStatus } from "./claude-token-status.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import {
   SCOPE_ADMIN,
@@ -38,18 +39,26 @@ import {
 import pkg from "../package.json" with { type: "json" };
 
 export type ServerDeps = {
-  transcribe: (file: File) => Promise<string>;
+  transcribe: ((file: File) => Promise<string>) | null;
   cleanup: Cleaner;
+  /**
+   * Resolved config snapshot — captured once at boot for the *selected*
+   * provider names + the port. Per-provider apiKey/model details are read
+   * per-request from the live `scribeConfig` (which mutates in place on PUT).
+   */
   resolvedConfig: ResolvedConfig;
   scribeConfig: ScribeConfig;
   /**
    * Path to the on-disk config file the admin PUT writes through. Defaults
    * to `resolveDefaultConfigPath()` so production code never specifies it;
-   * tests inject a tmp path. Pulled out as a dep rather than re-resolved at
-   * request time so the test can sandbox the write target without touching
-   * the operator's real `~/.parachute`.
+   * tests inject a tmp path.
    */
   configPath?: string;
+  /**
+   * Optional fault-injection seam for tests — when set, the GET handler uses
+   * this instead of reading `~/.claude.json`. Production never passes it.
+   */
+  setupTokenStatusFn?: () => ReturnType<typeof readSetupTokenStatus>;
 };
 
 export function createFetchHandler(deps: ServerDeps) {
@@ -63,20 +72,18 @@ export function createFetchHandler(deps: ServerDeps) {
 }
 
 /**
- * Per-route required scope. Two routes are scope-gated:
- *   - `/v1/audio/transcriptions` → `scribe:transcribe`
- *   - `/.parachute/config*`      → `scribe:admin` (per the canonical rule:
- *                                   "<service>:admin gates /.parachute/config*")
+ * Per-route required scope.
  *
- * Returns null when no scope check applies (exempt routes, /v1/models, etc.).
+ *   - `/v1/audio/transcriptions` → `scribe:transcribe`
+ *   - `/.parachute/config*`      → `scribe:admin`
+ *   - `/admin/*`                 → `scribe:admin` (refresh / clear endpoints)
+ *   - `/scribe/admin`            → `scribe:admin` (the SPA page itself)
+ *   - `/v1/models`               → `scribe:transcribe`
  */
 function requiredScopeFor(pathname: string, method: string): string | null {
   if (pathname === "/v1/audio/transcriptions" && method === "POST") return SCOPE_TRANSCRIBE;
   if (pathname.startsWith("/.parachute/config")) return SCOPE_ADMIN;
-  // `/scribe/admin` is the static admin SPA. The page itself is just HTML
-  // and (open mode aside) can't do anything without a Bearer to call back
-  // with — but we still scope-gate the HTML response so an unauthorized
-  // operator gets a clean 403 rather than a page that 401s on every fetch.
+  if (pathname.startsWith("/admin/")) return SCOPE_ADMIN;
   if (pathname === "/scribe/admin") return SCOPE_ADMIN;
   if (pathname === "/v1/models") return SCOPE_TRANSCRIBE;
   return null;
@@ -103,8 +110,17 @@ async function route(
     if (url.pathname === "/.parachute/info") return handleParachuteInfo();
     if (url.pathname === "/.parachute/icon.svg") return handleParachuteIcon();
     if (url.pathname === "/.parachute/config/schema") return handleConfigSchema();
-    if (url.pathname === "/.parachute/config") return handleConfig(deps.resolvedConfig);
+    if (url.pathname === "/.parachute/config") return handleConfigGet(deps);
     return new Response("Not found", { status: 404 });
+  }
+
+  // Admin actions live under /admin/* — refresh-claude-token-status is the
+  // only one shipped in 0.4.4-rc.1; clear-credential follows in Phase 2.
+  if (url.pathname === "/admin/refresh-claude-token-status" && req.method === "POST") {
+    return handleRefreshSetupTokenStatus(deps);
+  }
+  if (url.pathname.startsWith("/admin/") && req.method !== "GET") {
+    return Response.json({ error: "Not found" }, { status: 404 });
   }
 
   if (url.pathname === "/scribe/admin" && req.method === "GET") {
@@ -112,9 +128,6 @@ async function route(
       status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        // The page is per-instance branded but otherwise static and small.
-        // Short cache so a `bun link`-updated scribe serves the new HTML on
-        // reload without manual cache-busts.
         "Cache-Control": "no-cache",
       },
     });
@@ -138,26 +151,43 @@ async function route(
 }
 
 /**
- * PUT /.parachute/config — schema-validate the incoming body, atomically
- * persist it to `~/.parachute/scribe/config.json`, return the list of fields
- * whose change requires a restart to take effect.
+ * Build + return the public resolved-config response. writeOnly apiKey
+ * fields are omitted; per-provider model/url and the claude-code
+ * setupTokenStatus are included. Per-request so PUT changes show up
+ * immediately on the next GET.
+ */
+function handleConfigGet(deps: ServerDeps): Response {
+  const resolved = buildPublicResolvedConfig({
+    transcribeProvider: deps.resolvedConfig.transcribeProvider,
+    cleanupProvider: deps.resolvedConfig.cleanupProvider,
+    cleanupDefault: deps.resolvedConfig.cleanupDefault,
+    scribeConfig: deps.scribeConfig,
+    port: deps.resolvedConfig.port,
+    setupTokenStatusFn: deps.setupTokenStatusFn,
+  });
+  return Response.json(resolved);
+}
+
+/**
+ * `POST /admin/refresh-claude-token-status` — re-read `~/.claude.json` and
+ * return the current status as a small JSON body. The SPA hits this when
+ * the operator clicks the Refresh button next to the status pill on the
+ * claude-code provider section.
+ */
+function handleRefreshSetupTokenStatus(deps: ServerDeps): Response {
+  const status = (deps.setupTokenStatusFn ?? readSetupTokenStatus)();
+  return Response.json({ setupTokenStatus: status });
+}
+
+/**
+ * PUT /.parachute/config — validate, atomically persist, mutate the
+ * in-process scribeConfig so dynamically-read fields take effect without
+ * restart. Restart-required fields (provider switches, port) flow back to
+ * the SPA in the response body.
  *
- * The in-process resolved config is NOT mutated here. Provider/port values
- * are bound to the running handler at boot in `startServer()`; an in-place
- * swap would skip provider-init invariants. Operators see the new config on
- * the next process boot. `restart_required` makes that explicit.
- *
- * Fields that ARE read dynamically per-request (the cleanup default flag, the
- * cleanup prompt overrides) take effect on the next call without restart
- * because `handleTranscription` re-reads `deps.scribeConfig.cleanup.*` each
- * time. To keep that working we mutate the existing `scribeConfig` object's
- * `cleanup` block in place after a successful write — the running handler's
- * closure already holds the reference, so the new prompts apply immediately.
- *
- * `transcribeProvider` / `cleanupProvider` / `port` changes still require
- * restart because the provider *functions* (`deps.transcribe`, `deps.cleanup`)
- * were closed over at boot. We don't repoint them mid-life — too easy to
- * misconfigure a provider with no boot-time validation.
+ * writeOnly apiKey omit-to-keep semantics: an empty-string or absent
+ * `apiKey` in the patch preserves the stored value (see
+ * `mergeProviderMap`); only a non-empty string overwrites it.
  */
 async function handleConfigPut(req: Request, deps: ServerDeps): Promise<Response> {
   let body: unknown;
@@ -187,9 +217,6 @@ async function handleConfigPut(req: Request, deps: ServerDeps): Promise<Response
   const patch = toFileShape(incoming);
   const path = deps.configPath ?? resolveDefaultConfigPath();
 
-  // Read-modify-write so null-clear semantics actually clear (scribe#45
-  // must-fix 1). Without this, an absent key in `patch` was indistinguishable
-  // from "leave alone", and clearing a textarea silently no-op'd.
   let existing: ScribeConfig;
   try {
     existing = readExistingConfig(path);
@@ -213,12 +240,15 @@ async function handleConfigPut(req: Request, deps: ServerDeps): Promise<Response
       { status: 500 },
     );
   }
-  // Mirror the merged-on-disk cleanup block onto the in-process scribeConfig
-  // so dynamically-read fields take effect without restart. Replace the
-  // whole `cleanup` reference rather than spreading: a null-clear (e.g.
-  // `system_prompt`) must remove the key from the live config too, and a
-  // spread would carry the old value forward.
+
+  // Sync the in-process scribeConfig with the merged result so the next
+  // GET / transcribe request sees the new values without waiting on a
+  // restart. Replace each top-level block wholesale to honor null-clears.
   deps.scribeConfig.cleanup = merged.cleanup;
+  deps.scribeConfig.transcribe = merged.transcribe;
+  deps.scribeConfig.transcribeProviders = merged.transcribeProviders;
+  deps.scribeConfig.cleanupProviders = merged.cleanupProviders;
+
   const restartRequired = detectRestartRequired(deps.resolvedConfig, incoming);
   return Response.json({ ok: true, restart_required: restartRequired });
 }
@@ -229,6 +259,22 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
 
   if (!(file instanceof File)) {
     return Response.json({ error: "missing 'file' field" }, { status: 400 });
+  }
+
+  // Graceful first-boot path (site#52 Part 1, resolved Q2): if no transcription
+  // provider is wired up, return a stable 400 the caller can branch on. Vault's
+  // auto-transcribe maps `error_code: "missing_provider"` to
+  // `transcript_status: failed` with a clean `transcript_error` string.
+  if (deps.transcribe === null) {
+    return Response.json(
+      {
+        error: "no transcription provider configured",
+        error_code: "missing_provider",
+        message:
+          "Configure a transcription provider in the admin SPA (/scribe/admin) before sending audio.",
+      },
+      { status: 400 },
+    );
   }
 
   const { cleanupProvider, cleanupDefault } = deps.resolvedConfig;
@@ -281,28 +327,41 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
 export async function startServer() {
   const config = await loadConfig();
 
-  const TRANSCRIBE = config.transcribe?.provider ?? process.env.TRANSCRIBE_PROVIDER ?? "parakeet-mlx";
+  // Transcribe provider: config > env > built-in `parakeet-mlx` default.
+  // When even the default isn't viable on the host (e.g. Render container
+  // without MLX) the request-time call still raises a runtime error; the
+  // missing_provider 400 path is reserved for the case where the operator
+  // has *explicitly* unset the provider (TRANSCRIBE_PROVIDER="" + no
+  // config entry) — site#52 Part 1 graceful-degradation Q2.
+  const TRANSCRIBE =
+    config.transcribe?.provider ?? process.env.TRANSCRIBE_PROVIDER ?? "parakeet-mlx";
   const CLEANUP = config.cleanup?.provider ?? process.env.CLEANUP_PROVIDER ?? "none";
-  // Port resolution: services.json wins, then env, then canonical default.
-  // See `port-resolve.ts` and scribe#40 for the precedence rationale.
   const portResolution = resolvePort();
   const PORT = portResolution.port;
-  const CLEANUP_DEFAULT = config.cleanup?.default ?? true;
+  const CLEANUP_DEFAULT = config.cleanup?.default ?? config.cleanup?.enabled ?? true;
 
-  const transcribe = getProvider(transcribers, TRANSCRIBE, "transcription");
+  // A truly empty TRANSCRIBE (explicit "" from env or "" in config) yields
+  // null — and `/v1/audio/transcriptions` returns the stable
+  // `missing_provider` 400 vault#343 can branch on.
+  const transcribe = TRANSCRIBE && TRANSCRIBE.length > 0
+    ? getProvider(transcribers, TRANSCRIBE, "transcription")
+    : null;
   const cleanup = getProvider(cleaners, CLEANUP, "cleanup");
 
+  const transcribeProviderName = TRANSCRIBE && TRANSCRIBE.length > 0 ? TRANSCRIBE : "(none configured)";
   const resolvedConfig: ResolvedConfig = {
-    transcribeProvider: TRANSCRIBE,
+    transcribeProvider: transcribeProviderName,
+    transcribeProviders: {}, // populated by GET handler per-request
     cleanupProvider: CLEANUP,
     cleanupDefault: CLEANUP_DEFAULT,
+    cleanupProviders: {},
     cleanupSystemPrompt: config.cleanup?.system_prompt ?? null,
     cleanupContextTemplate: config.cleanup?.context_template ?? null,
     port: PORT,
   };
 
   console.log(`scribe listening on :${PORT} (port source: ${portResolution.source})`);
-  console.log(`  transcribe: ${TRANSCRIBE}`);
+  console.log(`  transcribe: ${transcribeProviderName}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
   console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN or hub JWT)" : "open"}`);
   warnIfTokenLooksJwt();
@@ -314,10 +373,6 @@ export async function startServer() {
     scribeConfig: config,
   });
 
-  // Fail-loud on bind: if PORT is in use we want a named, actionable error
-  // rather than a silent "address in use" deep inside Bun. The hub probes
-  // `/health` after spawn, so an unbound scribe surfaces as "service didn't
-  // come up" — which is hard to debug without this hint.
   try {
     Bun.serve({
       hostname: "0.0.0.0",

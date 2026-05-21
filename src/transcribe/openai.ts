@@ -1,10 +1,13 @@
+import { getTranscribeProviderConfig } from "../provider-config.ts";
+
 export async function transcribe(audio: File): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
+  const cfg = await getTranscribeProviderConfig("openai");
+  const apiKey = cfg.apiKey;
+  if (!apiKey) throw new Error("openai apiKey not configured (set via /.parachute/config or OPENAI_API_KEY env)");
 
   const form = new FormData();
   form.set("file", audio);
-  form.set("model", process.env.OPENAI_MODEL ?? "whisper-1");
+  form.set("model", cfg.model ?? "whisper-1");
 
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",

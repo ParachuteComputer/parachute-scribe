@@ -1,12 +1,14 @@
 import { buildCleanupPrompt, type CleanupPromptOpts } from "./prompt.ts";
+import { getCleanupProviderConfig } from "../provider-config.ts";
 
 export async function cleanup(
   text: string,
   properNouns?: string,
   opts?: CleanupPromptOpts,
 ): Promise<string> {
-  const url = process.env.OLLAMA_URL ?? "http://localhost:11434";
-  const model = process.env.OLLAMA_MODEL ?? "gemma4:e4b";
+  const cfg = await getCleanupProviderConfig("ollama");
+  const url = cfg.url ?? "http://localhost:11434";
+  const model = cfg.model ?? "gemma4:e4b";
 
   const res = await fetch(`${url}/api/chat`, {
     method: "POST",
