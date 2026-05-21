@@ -1,7 +1,17 @@
 import { cleaners, getProvider, transcribers, type Cleaner } from "./providers.ts";
 import { loadConfig, resolveDefaultConfigPath, type ScribeConfig } from "./config.ts";
-import { buildProperNounsBlockFromEntries, parseContextPayload } from "./context.ts";
+import {
+  buildProperNounsBlockFromEntries,
+  parseContextPayload,
+  type ContextPayload,
+} from "./context.ts";
 import { preflight, withCors } from "./cors.ts";
+import {
+  UrlFetchError,
+  fetchAudioFromUrl,
+  type FetchedAudio,
+} from "./url-fetch.ts";
+import { handleScribeMcp } from "./mcp/http.ts";
 import { upsertService } from "./services-manifest.ts";
 import { resolvePort } from "./port-resolve.ts";
 import {
@@ -82,10 +92,18 @@ export function createFetchHandler(deps: ServerDeps) {
  */
 function requiredScopeFor(pathname: string, method: string): string | null {
   if (pathname === "/v1/audio/transcriptions" && method === "POST") return SCOPE_TRANSCRIBE;
+  if (pathname === "/v1/audio/transcriptions-url" && method === "POST") return SCOPE_TRANSCRIBE;
   if (pathname.startsWith("/.parachute/config")) return SCOPE_ADMIN;
   if (pathname.startsWith("/admin/")) return SCOPE_ADMIN;
   if (pathname === "/scribe/admin") return SCOPE_ADMIN;
   if (pathname === "/v1/models") return SCOPE_TRANSCRIBE;
+  if (pathname === "/scribe/mcp" || pathname.startsWith("/scribe/mcp/")) {
+    // MCP transport — the SDK negotiates capabilities on the first call;
+    // per-tool scope enforcement happens inside the handler so a caller
+    // with only `scribe:transcribe` can list/call tools without needing
+    // `scribe:admin`. The transport itself just needs *some* valid auth.
+    return SCOPE_TRANSCRIBE;
+  }
   return null;
 }
 
@@ -135,6 +153,14 @@ async function route(
 
   if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
     return handleTranscription(req, deps);
+  }
+
+  if (url.pathname === "/v1/audio/transcriptions-url" && req.method === "POST") {
+    return handleTranscriptionUrl(req, deps);
+  }
+
+  if (url.pathname === "/scribe/mcp" || url.pathname.startsWith("/scribe/mcp/")) {
+    return handleScribeMcp(req, scopes, deps);
   }
 
   if (url.pathname === "/health") {
@@ -261,34 +287,12 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
     return Response.json({ error: "missing 'file' field" }, { status: 400 });
   }
 
-  // Graceful first-boot path (site#52 Part 1, resolved Q2): if no transcription
-  // provider is wired up, return a stable 400 the caller can branch on. Vault's
-  // auto-transcribe maps `error_code: "missing_provider"` to
-  // `transcript_status: failed` with a clean `transcript_error` string.
-  if (deps.transcribe === null) {
-    return Response.json(
-      {
-        error: "no transcription provider configured",
-        error_code: "missing_provider",
-        message:
-          "Configure a transcription provider in the admin SPA (/scribe/admin) before sending audio.",
-      },
-      { status: 400 },
-    );
-  }
+  const missingProvider = guardMissingProvider(deps);
+  if (missingProvider) return missingProvider;
 
-  const { cleanupProvider, cleanupDefault } = deps.resolvedConfig;
   const cleanupParam = form.get("cleanup");
-  const doCleanup =
-    cleanupProvider !== "none" &&
-    (cleanupParam === "true" || cleanupParam === "1"
-      ? true
-      : cleanupParam === "false" || cleanupParam === "0"
-        ? false
-        : cleanupDefault);
-
   const contextPart = form.get("context");
-  let contextPayload: ReturnType<typeof parseContextPayload> = null;
+  let contextPayload: ContextPayload | null = null;
   if (contextPart != null) {
     const raw = contextPart instanceof Blob ? await contextPart.text() : String(contextPart);
     contextPayload = parseContextPayload(raw);
@@ -296,6 +300,127 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
       console.warn("[scribe] malformed 'context' part in transcription request — ignoring, cleanup will run without proper nouns");
     }
   }
+
+  return runTranscribePipeline(file, deps, {
+    cleanupParam: typeof cleanupParam === "string" ? cleanupParam : null,
+    contextPayload,
+  });
+}
+
+/**
+ * URL-source transcription: download an audio file from a public URL,
+ * then run the same pipeline. The body is JSON (not multipart) — the
+ * caller has nothing to upload, just a URL and optional options.
+ *
+ * Request body:
+ *   { "url": "https://...", "cleanup"?: bool|"true"|"false",
+ *     "context"?: ContextPayload }
+ *
+ * Response: same `{text}` shape as the file endpoint, with an
+ * additional `source.url` echoing what was actually fetched (post any
+ * redirects).
+ */
+async function handleTranscriptionUrl(req: Request, deps: ServerDeps): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return Response.json(
+      {
+        error: "invalid_json",
+        message: err instanceof Error ? err.message : "request body was not valid JSON",
+      },
+      { status: 400 },
+    );
+  }
+  if (!body || typeof body !== "object") {
+    return Response.json({ error: "missing 'url' field" }, { status: 400 });
+  }
+  const { url: urlInput, cleanup: cleanupParam, context: contextRaw } = body as Record<string, unknown>;
+  if (typeof urlInput !== "string" || urlInput.trim() === "") {
+    return Response.json({ error: "missing 'url' field" }, { status: 400 });
+  }
+
+  const missingProvider = guardMissingProvider(deps);
+  if (missingProvider) return missingProvider;
+
+  let fetched: FetchedAudio;
+  try {
+    fetched = await fetchAudioFromUrl(urlInput.trim());
+  } catch (err) {
+    if (err instanceof UrlFetchError) {
+      return Response.json(
+        { error: err.code, message: err.message },
+        { status: err.status },
+      );
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[scribe] unexpected url-fetch error:", message);
+    return Response.json(
+      { error: "fetch_failed", message },
+      { status: 502 },
+    );
+  }
+
+  let contextPayload: ContextPayload | null = null;
+  if (contextRaw != null) {
+    // Accept either a parsed object OR a JSON string (mirrors the
+    // multipart endpoint where the `context` part arrives as a Blob).
+    const raw =
+      typeof contextRaw === "string" ? contextRaw : JSON.stringify(contextRaw);
+    contextPayload = parseContextPayload(raw);
+    if (!contextPayload) {
+      console.warn(
+        "[scribe] malformed 'context' field on /v1/audio/transcriptions-url — ignoring",
+      );
+    }
+  }
+
+  const normalizedCleanup =
+    typeof cleanupParam === "boolean"
+      ? cleanupParam
+        ? "true"
+        : "false"
+      : typeof cleanupParam === "string"
+        ? cleanupParam
+        : null;
+
+  return runTranscribePipeline(fetched.file, deps, {
+    cleanupParam: normalizedCleanup,
+    contextPayload,
+    source: { url: fetched.finalUrl, bytes: fetched.bytes, contentType: fetched.contentType },
+  });
+}
+
+/**
+ * Shared pipeline driver — used by both the multipart file endpoint and
+ * the JSON URL endpoint. Decides whether to run cleanup based on the
+ * `cleanupParam` string ("true"/"false"/null) and the resolved config's
+ * default, then returns the standard `{text, source?}` response.
+ */
+export async function runTranscribePipeline(
+  file: File,
+  deps: ServerDeps,
+  opts: {
+    cleanupParam: string | null;
+    contextPayload: ContextPayload | null;
+    source?: { url: string; bytes: number; contentType: string | null };
+  },
+): Promise<Response> {
+  if (deps.transcribe === null) {
+    // Belt + braces — both call sites already guard, but a future caller
+    // (MCP) could reach here directly.
+    return missingProviderResponse();
+  }
+  const { cleanupProvider, cleanupDefault } = deps.resolvedConfig;
+  const { cleanupParam, contextPayload, source } = opts;
+  const doCleanup =
+    cleanupProvider !== "none" &&
+    (cleanupParam === "true" || cleanupParam === "1"
+      ? true
+      : cleanupParam === "false" || cleanupParam === "0"
+        ? false
+        : cleanupDefault);
 
   let text: string;
   try {
@@ -321,7 +446,29 @@ async function handleTranscription(req: Request, deps: ServerDeps): Promise<Resp
     }
   }
 
-  return Response.json({ text });
+  return Response.json(source ? { text, source } : { text });
+}
+
+function guardMissingProvider(deps: ServerDeps): Response | null {
+  if (deps.transcribe !== null) return null;
+  return missingProviderResponse();
+}
+
+function missingProviderResponse(): Response {
+  // Graceful first-boot path (site#52 Part 1, resolved Q2): if no
+  // transcription provider is wired up, return a stable 400 the caller
+  // can branch on. Vault's auto-transcribe maps `error_code:
+  // "missing_provider"` to `transcript_status: failed` with a clean
+  // `transcript_error` string.
+  return Response.json(
+    {
+      error: "no transcription provider configured",
+      error_code: "missing_provider",
+      message:
+        "Configure a transcription provider in the admin SPA (/scribe/admin) before sending audio.",
+    },
+    { status: 400 },
+  );
 }
 
 export async function startServer() {
