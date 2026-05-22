@@ -426,3 +426,231 @@ describe("PUT /.parachute/config — empty-body no-op", () => {
     expect(onDisk.transcribeProviders.groq.model).toBe("m");
   });
 });
+
+describe("POST /admin/clear-credential/<kind>/<name> — Phase 2 (scribe#47 follow-up)", () => {
+  let dir: string;
+  let configPath: string;
+  let originalToken: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "scribe-clear-cred-"));
+    configPath = join(dir, "scribe", "config.json");
+    originalToken = process.env.SCRIBE_AUTH_TOKEN;
+    delete process.env.SCRIBE_AUTH_TOKEN;
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    if (originalToken === undefined) delete process.env.SCRIBE_AUTH_TOKEN;
+    else process.env.SCRIBE_AUTH_TOKEN = originalToken;
+  });
+
+  function clearReq(path: string, token?: string): Request {
+    const headers: Record<string, string> = {};
+    if (token !== undefined) headers.Authorization = `Bearer ${token}`;
+    return new Request(`http://localhost${path}`, { method: "POST", headers });
+  }
+
+  function seedConfig(cfg: Record<string, unknown>): void {
+    mkdirSync(join(dir, "scribe"), { recursive: true });
+    writeFileSync(configPath, JSON.stringify(cfg), { mode: 0o600 });
+  }
+
+  test("happy path: clears cleanup/anthropic apiKey + returns 200 with hadStoredValue:true", async () => {
+    seedConfig({
+      cleanupProviders: { anthropic: { apiKey: "sk-ant-real", model: "claude-3-5-sonnet" } },
+    });
+    const scribeConfig: ScribeConfig = {
+      cleanupProviders: { anthropic: { apiKey: "sk-ant-real", model: "claude-3-5-sonnet" } },
+    };
+    const handler = buildHandler(configPath, { scribeConfig });
+
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/anthropic"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      cleared: { kind: string; name: string; field: string };
+      hadStoredValue: boolean;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.cleared).toEqual({ kind: "cleanup", name: "anthropic", field: "apiKey" });
+    expect(body.hadStoredValue).toBe(true);
+
+    // On-disk: model survives, apiKey is gone.
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(onDisk.cleanupProviders.anthropic.apiKey).toBeUndefined();
+    expect(onDisk.cleanupProviders.anthropic.model).toBe("claude-3-5-sonnet");
+    // In-process scribeConfig mirrors disk so the next request doesn't keep the stale key.
+    expect(scribeConfig.cleanupProviders?.anthropic?.apiKey).toBeUndefined();
+    expect(scribeConfig.cleanupProviders?.anthropic?.model).toBe("claude-3-5-sonnet");
+  });
+
+  test("idempotent no-op: clearing when nothing stored returns 200 with hadStoredValue:false", async () => {
+    // No seed — config doesn't exist yet on disk.
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/anthropic"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; hadStoredValue: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.hadStoredValue).toBe(false);
+  });
+
+  test("idempotent no-op: clearing apiKey-only provider drops the empty entry", async () => {
+    // Provider entry that holds ONLY apiKey gets removed entirely so the
+    // on-disk file doesn't accumulate `{provider: {}}` shells.
+    seedConfig({
+      cleanupProviders: { anthropic: { apiKey: "sk-ant-real" } },
+    });
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/anthropic"));
+    expect(res.status).toBe(200);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    // Provider entry gone AND cleanupProviders map gone (it's now empty).
+    expect(onDisk.cleanupProviders).toBeUndefined();
+  });
+
+  test("transcribe kind: clears groq apiKey while preserving model", async () => {
+    seedConfig({
+      transcribeProviders: { groq: { apiKey: "gsk_real", model: "whisper-large-v3" } },
+    });
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/transcribe/groq"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { cleared: { kind: string; name: string; field: string } };
+    expect(body.cleared.kind).toBe("transcribe");
+    expect(body.cleared.name).toBe("groq");
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(onDisk.transcribeProviders.groq.apiKey).toBeUndefined();
+    expect(onDisk.transcribeProviders.groq.model).toBe("whisper-large-v3");
+  });
+
+  test("GET /.parachute/config reflects the clear: apiKeyConfigured is false after", async () => {
+    seedConfig({
+      cleanupProviders: { anthropic: { apiKey: "sk-ant-real", model: "claude-3-5-sonnet" } },
+    });
+    const scribeConfig: ScribeConfig = {
+      cleanupProviders: { anthropic: { apiKey: "sk-ant-real", model: "claude-3-5-sonnet" } },
+    };
+    const handler = buildHandler(configPath, { scribeConfig });
+
+    // Pre: GET shows apiKeyConfigured: true.
+    const preRes = await handler(getConfigReq());
+    const preBody = (await preRes.json()) as { cleanupProviders: Record<string, { apiKeyConfigured?: boolean; model?: string }> };
+    expect(preBody.cleanupProviders.anthropic?.apiKeyConfigured).toBe(true);
+
+    // Clear.
+    await handler(clearReq("/admin/clear-credential/cleanup/anthropic"));
+
+    // Post: GET no longer reports apiKeyConfigured (writeOnly omission + no value).
+    const postRes = await handler(getConfigReq());
+    const postBody = (await postRes.json()) as { cleanupProviders: Record<string, { apiKeyConfigured?: boolean; model?: string }> };
+    expect(postBody.cleanupProviders.anthropic?.apiKeyConfigured).toBeUndefined();
+    // Model survives in the GET response too.
+    expect(postBody.cleanupProviders.anthropic?.model).toBe("claude-3-5-sonnet");
+  });
+
+  test("400 invalid_kind: kind not in enum", async () => {
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/bogus/anthropic"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("invalid_kind");
+    expect(body.message).toContain("transcribe");
+    expect(body.message).toContain("cleanup");
+  });
+
+  test("400 unknown_provider: kind valid but name not in registry", async () => {
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/not-a-thing"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("unknown_provider");
+    expect(body.message).toContain("not-a-thing");
+  });
+
+  test("400 unknown_provider: name from the OTHER kind's registry is rejected", async () => {
+    // `parakeet-mlx` is a transcribe provider — not valid under cleanup.
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/parakeet-mlx"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("unknown_provider");
+  });
+
+  test("400 invalid_path: missing name segment", async () => {
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_path");
+  });
+
+  test("400 invalid_path: extra segments past kind/name", async () => {
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/anthropic/apiKey"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_path");
+  });
+
+  test("401 missing bearer in closed mode", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    seedConfig({ cleanupProviders: { anthropic: { apiKey: "sk-ant" } } });
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/anthropic"));
+    expect(res.status).toBe(401);
+    // On-disk apiKey untouched.
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(onDisk.cleanupProviders.anthropic.apiKey).toBe("sk-ant");
+  });
+
+  test("401 wrong bearer in closed mode", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    seedConfig({ cleanupProviders: { anthropic: { apiKey: "sk-ant" } } });
+    const handler = buildHandler(configPath);
+    const res = await handler(
+      clearReq("/admin/clear-credential/cleanup/anthropic", "wrong"),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("200 with matching shared-secret bearer (grants scribe:admin)", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    seedConfig({ cleanupProviders: { anthropic: { apiKey: "sk-ant", model: "m" } } });
+    const handler = buildHandler(configPath);
+    const res = await handler(
+      clearReq("/admin/clear-credential/cleanup/anthropic", "s3cret"),
+    );
+    expect(res.status).toBe(200);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(onDisk.cleanupProviders.anthropic.apiKey).toBeUndefined();
+    expect(onDisk.cleanupProviders.anthropic.model).toBe("m");
+  });
+
+  test("405-ish: GET on the clear-credential path falls through to 404", async () => {
+    // The route only matches POST. GET hits the catch-all 404 — by design,
+    // since this is a side-effecting verb only.
+    const handler = buildHandler(configPath);
+    const res = await handler(
+      new Request("http://localhost/admin/clear-credential/cleanup/anthropic"),
+    );
+    // Either 404 or 405 is acceptable here; the contract is "not a GET endpoint."
+    expect([404, 405]).toContain(res.status);
+  });
+
+  test("clearing one provider's apiKey doesn't touch siblings", async () => {
+    seedConfig({
+      cleanupProviders: {
+        anthropic: { apiKey: "sk-ant-real", model: "claude-3-5-sonnet" },
+        openai: { apiKey: "sk-openai-real", model: "gpt-4o" },
+      },
+    });
+    const handler = buildHandler(configPath);
+    const res = await handler(clearReq("/admin/clear-credential/cleanup/anthropic"));
+    expect(res.status).toBe(200);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(onDisk.cleanupProviders.anthropic.apiKey).toBeUndefined();
+    expect(onDisk.cleanupProviders.openai.apiKey).toBe("sk-openai-real");
+    expect(onDisk.cleanupProviders.openai.model).toBe("gpt-4o");
+  });
+});
