@@ -60,7 +60,6 @@ function makeFakeInstall(root: string, overrides: Record<string, unknown> = {}):
     manifestName: "parachute-scribe",
     displayName: "Scribe",
     tagline: "Audio transcription (Whisper-compatible API + LLM cleanup)",
-    kind: "api",
     port: 1943,
     paths: ["/scribe"],
     health: "/health",
