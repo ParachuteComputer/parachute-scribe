@@ -24,7 +24,6 @@ describe("parachute-info", () => {
       name: SERVICE_NAME,
       displayName: DISPLAY_NAME,
       tagline: TAGLINE,
-      kind: "api",
       version: pkg.version,
       iconUrl: `${MOUNT_PATH}/.parachute/icon.svg`,
     });
