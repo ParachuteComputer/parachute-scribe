@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.4-rc.6] - 2026-05-23
+
+### chore(scribe): drop `kind` from `.parachute/module.json` (hub#301 Phase B)
+
+- Dropped `kind` field from `.parachute/module.json`. Per hub#301 Phase B. No behavior change.
+
 ## [0.4.4-rc.5] - 2026-05-21
 
 ### feat(scribe): POST /admin/clear-credential endpoint (Phase 2 polish from #47)
