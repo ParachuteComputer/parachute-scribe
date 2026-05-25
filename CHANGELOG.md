@@ -1,6 +1,16 @@
 # Changelog
 
-## [0.4.4-rc.8] - 2026-05-25
+## [0.4.4-rc.9] - 2026-05-25
+
+### Fixed
+
+- **Added `repository` field to `package.json` required for npm Trusted Publishing provenance verification.** Without it, the release CI's `npm publish` rejects with `E422 "repository.url" is "", expected to match "https://github.com/ParachuteComputer/parachute-scribe" from provenance`. The rc.8 tag was pushed but the publish failed at this gate after the provenance bundle was already signed; rc.8 is burned (provenance signed, npm publish refused, version-number consumed but never landed on npm).
+
+### Added (carried from rc.8)
+
+- **Scribe declares `uiUrl: "/scribe/admin"` in `.parachute/module.json` (workstream C of the UX audit, scribe#56).** Hub's well-known fan-out now reads scribe's `uiUrl` and emits a discovery tile for scribe's admin UI alongside vault and app. Per [patterns/module-ui-declaration.md](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/module-ui-declaration.md).
+
+## [0.4.4-rc.8] - 2026-05-25 (never published)
 
 ### Added
 
