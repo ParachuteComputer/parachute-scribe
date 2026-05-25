@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.4-rc.8] - 2026-05-25
+
+### Added
+
+- **Scribe declares `uiUrl: "/scribe/admin"` in `.parachute/module.json` (workstream C of the UX audit, scribe#56).** Hub's well-known fan-out now reads scribe's `uiUrl` and emits a discovery tile for scribe's admin UI alongside vault and app. Per [patterns/module-ui-declaration.md](https://github.com/ParachuteComputer/parachute-patterns/blob/main/patterns/module-ui-declaration.md). Single-instance form (no per-instance mount prefix — scribe is single-instance per hub).
+
 ## [0.4.4-rc.7] - 2026-05-23
 
 ### Removed
