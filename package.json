@@ -1,6 +1,6 @@
 {
   "name": "@openparachute/scribe",
-  "version": "0.4.4-rc.9",
+  "version": "0.4.4",
   "description": "Audio transcription + LLM cleanup. Whisper-compatible API for Parachute.",
   "repository": {
     "type": "git",
