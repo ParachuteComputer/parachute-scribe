@@ -58,9 +58,16 @@ const FONT_MONO = `ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", mono
  * shape for direct-loopback callers. Issue #39.
  */
 export function renderAdminPage(mount = ""): string {
-  // Build the mount-aware URLs server-side so the page script is a
-  // pure no-state interpolation. `mount` is already normalized by the
-  // server boot path (see `src/mount.ts`).
+  // Server-side `mount` builds the visible "Live values" links in the
+  // page chrome. For the in-page JS fetches we ALSO detect the mount
+  // at runtime from `window.location.pathname` (see the inline
+  // <script> below) — that path is the one that works when scribe is
+  // launched without `--mount` and accessed through the hub's
+  // `/scribe` proxy (the hub strips the `/scribe` prefix before
+  // forwarding, so scribe's request-level mount is empty even though
+  // the public mount is `/scribe`). Without the runtime fallback the
+  // page hits `/.parachute/config/schema` at the origin root and the
+  // hub 404s. Aaron hit this 2026-05-27 on the live deploy.
   const configUrl = `${mount}/.parachute/config`;
   const schemaUrl = `${mount}/.parachute/config/schema`;
   return `<!doctype html>
@@ -141,11 +148,56 @@ export function renderAdminPage(mount = ""): string {
   </main>
 
   <script>
-    // Mount-prefix the page-script's fetch URLs see. Server-rendered so
-    // the script body can stay a plain string literal (no per-request
-    // template interpolation inside the script itself). Issue #39.
-    window.__SCRIBE_CONFIG_URL__ = ${JSON.stringify(configUrl)};
-    window.__SCRIBE_SCHEMA_URL__ = ${JSON.stringify(schemaUrl)};
+    // Mount-prefix the page-script's fetch URLs see. Two sources of
+    // truth here, in priority order:
+    //
+    //   1. RUNTIME detection from window.location.pathname (the
+    //      load-bearing path). The admin page is served at
+    //      \`<mount>/admin\` (canonical) or \`<mount>/scribe/admin\`
+    //      (legacy alias). Strip the suffix to recover \`<mount>\`.
+    //      Works regardless of how scribe was launched: direct
+    //      loopback (mount = ""), through a hub mounted at /scribe
+    //      (mount = "/scribe"), or any custom prefix.
+    //
+    //   2. SERVER-rendered fallback (\`${schemaUrl}\` etc.) — used
+    //      only when window.location is unavailable (server-side
+    //      render harness, future SSR, paranoid env).
+    //
+    // Aaron hit the wrong-URL bug on 2026-05-27 when scribe was
+    // launched without \`--mount /scribe\` but accessed through the
+    // hub's /scribe proxy. The hub strips /scribe before forwarding,
+    // so scribe's server-side mount is "", but the browser-visible
+    // page URL is /scribe/admin and the schema lives at
+    // /scribe/.parachute/config/schema. Runtime detection captures
+    // this without needing the launcher to pass --mount.
+    (function () {
+      function detectMount() {
+        try {
+          var path = window.location.pathname.replace(/\\/+$/, "");
+          // Hub-proxy path: /scribe/admin (full prefix included pre-strip).
+          // Loopback / direct path: /admin (no prefix).
+          // Both served by the same handler in src/server.ts.
+          if (path.endsWith("/scribe/admin")) return path.slice(0, -"/scribe/admin".length);
+          if (path.endsWith("/admin")) return path.slice(0, -"/admin".length);
+          // Unrecognized suffix — return null so the server-rendered
+          // fallback fires. Avoids silently producing wrong URLs if a
+          // future proxy nests scribe under a non-canonical shape.
+          return null;
+        } catch (_e) {
+          return null;
+        }
+      }
+      var runtimeMount = detectMount();
+      var serverConfigUrl = ${JSON.stringify(configUrl)};
+      var serverSchemaUrl = ${JSON.stringify(schemaUrl)};
+      if (runtimeMount === null) {
+        window.__SCRIBE_CONFIG_URL__ = serverConfigUrl;
+        window.__SCRIBE_SCHEMA_URL__ = serverSchemaUrl;
+      } else {
+        window.__SCRIBE_CONFIG_URL__ = runtimeMount + "/.parachute/config";
+        window.__SCRIBE_SCHEMA_URL__ = runtimeMount + "/.parachute/config/schema";
+      }
+    })();
   </script>
   <script>${PAGE_SCRIPT}</script>
 </body>
