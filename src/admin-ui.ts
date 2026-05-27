@@ -174,10 +174,21 @@ export function renderAdminPage(mount = ""): string {
       function detectMount() {
         try {
           var path = window.location.pathname.replace(/\\/+$/, "");
-          // Hub-proxy path: /scribe/admin (full prefix included pre-strip).
-          // Loopback / direct path: /admin (no prefix).
-          // Both served by the same handler in src/server.ts.
-          if (path.endsWith("/scribe/admin")) return path.slice(0, -"/scribe/admin".length);
+          // The admin page is served at <mount>/admin. Strip just
+          // the trailing "/admin" segment to recover <mount>.
+          //
+          // Works for every shape (Aaron's fix #2 — the prior version
+          // had a buggy "/scribe/admin" first-branch that stripped the
+          // ENTIRE path, leaving mount="" for the hub-proxy case):
+          //
+          //   /admin           → mount = ""        (direct loopback)
+          //   /scribe/admin    → mount = "/scribe" (hub proxy)
+          //   /any/path/admin  → mount = "/any/path" (custom proxy)
+          //
+          // The dedicated /scribe/admin route in src/server.ts is a
+          // legacy alias scribe handles too — but for the purposes of
+          // the BROWSER, the path is just a path; what we need is the
+          // prefix that comes BEFORE /admin to build sibling URLs.
           if (path.endsWith("/admin")) return path.slice(0, -"/admin".length);
           // Unrecognized suffix — return null so the server-rendered
           // fallback fires. Avoids silently producing wrong URLs if a

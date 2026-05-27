@@ -59,3 +59,87 @@ describe("renderAdminPage", () => {
     expect(html).toContain("runtimeMount === null");
   });
 });
+
+/**
+ * Behavioral tests for the inline `detectMount` function. We extract
+ * the JS body via regex + evaluate it under a stubbed `window` so we
+ * can assert the actual return value for each pathname shape — not
+ * just the presence of source strings.
+ *
+ * Pinning the regression Aaron hit twice:
+ *   1. Original bug — pathname `/scribe/admin` produced mount `""`
+ *      because no detection logic existed at all (server-side mount
+ *      was "" because scribe was launched without --mount).
+ *   2. First-fix bug — pathname `/scribe/admin` STILL produced mount
+ *      `""` because the detection function's first branch stripped
+ *      the ENTIRE `/scribe/admin` suffix. The fix in this PR strips
+ *      just `/admin`, leaving `/scribe` as the prefix.
+ */
+function extractAndRunDetectMount(pathname: string): string | null {
+  const html = renderAdminPage("");
+  // The detect function body is the function literal in the inline
+  // <script>. Grab it via a sentinel comment + run it in a stubbed
+  // window context.
+  const start = html.indexOf("function detectMount()");
+  if (start === -1) throw new Error("detectMount not found in rendered HTML");
+  // Find the matching closing brace for the function body. Simple
+  // brace-counting since the body is well-formed.
+  let depth = 0;
+  let i = html.indexOf("{", start);
+  const bodyStart = i;
+  for (; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  const fnSource = `(function () { ${html.slice(start, i + 1)} return detectMount; })`;
+  // biome-ignore lint/security/noGlobalEval: test-only eval of trusted source rendered by the page.
+  const factory = eval(fnSource);
+  const fn = factory();
+  // Stub window.location.pathname in a sandboxed global.
+  const prevWindow = (globalThis as { window?: { location: { pathname: string } } }).window;
+  (globalThis as { window?: { location: { pathname: string } } }).window = {
+    location: { pathname },
+  };
+  try {
+    return fn() as string | null;
+  } finally {
+    if (prevWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window;
+    } else {
+      (globalThis as { window?: unknown }).window = prevWindow;
+    }
+  }
+  // Use `bodyStart` to silence lint (the brace-finder uses it as the entry index).
+  void bodyStart;
+}
+
+describe("detectMount runtime behavior", () => {
+  test("/admin (direct loopback) → mount = \"\"", () => {
+    expect(extractAndRunDetectMount("/admin")).toBe("");
+  });
+
+  test("/scribe/admin (hub proxy) → mount = \"/scribe\"", () => {
+    // Load-bearing assertion. The original bug AND the first-fix bug
+    // both produced "" here. The fix in this PR returns "/scribe".
+    expect(extractAndRunDetectMount("/scribe/admin")).toBe("/scribe");
+  });
+
+  test("/some/custom/prefix/admin → mount = \"/some/custom/prefix\"", () => {
+    expect(extractAndRunDetectMount("/some/custom/prefix/admin")).toBe("/some/custom/prefix");
+  });
+
+  test("/admin/ (trailing slash) → mount = \"\"", () => {
+    expect(extractAndRunDetectMount("/admin/")).toBe("");
+  });
+
+  test("/scribe/admin/ (trailing slash) → mount = \"/scribe\"", () => {
+    expect(extractAndRunDetectMount("/scribe/admin/")).toBe("/scribe");
+  });
+
+  test("unrecognized path → null (server fallback fires)", () => {
+    expect(extractAndRunDetectMount("/some/other/page")).toBeNull();
+  });
+});
