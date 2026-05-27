@@ -335,6 +335,18 @@ const STYLES = `
     flex-direction: column;
     gap: 1rem;
   }
+  /* The 'hidden' HTML attribute resolves to UA-stylesheet 'display: none',
+   * which loses specificity to the author-stylesheet 'fieldset { display:
+   * flex; }' rule above. Without this override, el("form-loading").hidden
+   * = true sets the attribute but the loading legend stays visible —
+   * stacked on top of the loaded form below it. The operator sees BOTH
+   * "Loading current configuration…" AND the rendered fields. Same
+   * collision applies to #form-body's initial 'hidden' state (it hides
+   * via the display: none rule below before applyConfig runs), so the
+   * !important is necessary to make the attribute reliably win over any
+   * fieldset display rule. Caught 2026-05-27 on Aaron's deploy after the
+   * 0.4.5 mount-detect fix made the form actually reachable. */
+  fieldset[hidden] { display: none !important; }
   fieldset.loading {
     padding: 1.25rem;
     background: ${PALETTE.bgSoft};

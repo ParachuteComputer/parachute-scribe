@@ -46,6 +46,20 @@ describe("renderAdminPage", () => {
     expect(html).toContain('"/scribe/.parachute/config/schema"');
   });
 
+  test("STYLES carries fieldset[hidden] override so the loading legend can be hidden", () => {
+    // The 'fieldset { display: flex }' rule in the styles block beats the
+    // UA-stylesheet `[hidden] { display: none }` in specificity (author
+    // element selector vs. UA attribute selector), so without an explicit
+    // `fieldset[hidden] { display: none !important }` the `hidden` attribute
+    // toggles in loadConfig() set the attribute but don't visually hide the
+    // legend — operator sees both "Loading current configuration…" AND the
+    // rendered form fields stacked together. Caught 2026-05-27 on Aaron's
+    // deploy after the 0.4.5 mount-detect fix made the form reachable.
+    const html = renderAdminPage("");
+    expect(html).toContain("fieldset[hidden]");
+    expect(html).toContain("display: none !important");
+  });
+
   test("inline script wires both runtime and fallback URL branches", () => {
     // Pure structural check: the runtime-detected branch (uses
     // `runtimeMount + ...`) and the server-rendered fallback branch
