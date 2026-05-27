@@ -174,10 +174,15 @@ export function renderAdminPage(mount = ""): string {
       function detectMount() {
         try {
           var path = window.location.pathname.replace(/\\/+$/, "");
-          // Canonical suffix: /admin. Legacy alias: /scribe/admin.
+          // Hub-proxy path: /scribe/admin (full prefix included pre-strip).
+          // Loopback / direct path: /admin (no prefix).
+          // Both served by the same handler in src/server.ts.
           if (path.endsWith("/scribe/admin")) return path.slice(0, -"/scribe/admin".length);
           if (path.endsWith("/admin")) return path.slice(0, -"/admin".length);
-          return "";
+          // Unrecognized suffix — return null so the server-rendered
+          // fallback fires. Avoids silently producing wrong URLs if a
+          // future proxy nests scribe under a non-canonical shape.
+          return null;
         } catch (_e) {
           return null;
         }

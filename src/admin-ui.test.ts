@@ -46,20 +46,16 @@ describe("renderAdminPage", () => {
     expect(html).toContain('"/scribe/.parachute/config/schema"');
   });
 
-  test("inline script uses runtime-detected mount, not server-side, as primary", () => {
-    // Pure structural check: the runtime-detection branch must come
-    // FIRST in the if/else. If a refactor flips the priority, the
-    // bug Aaron hit (server-side mount = "" but real public mount is
-    // /scribe) reappears.
+  test("inline script wires both runtime and fallback URL branches", () => {
+    // Pure structural check: the runtime-detected branch (uses
+    // `runtimeMount + ...`) and the server-rendered fallback branch
+    // (uses the JSON-encoded server values) must BOTH be present and
+    // gated by the `runtimeMount === null` discriminator. If a
+    // refactor removes either branch, the bug Aaron hit (server-side
+    // mount = "" but real public mount is /scribe) reappears.
     const html = renderAdminPage("");
-    const runtimeIdx = html.indexOf("runtimeMount + ");
-    const fallbackIdx = html.indexOf("= serverConfigUrl");
-    expect(runtimeIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(-1);
-    // The runtime + branch should appear AFTER the fallback branch in
-    // the if/else (the fallback is the `if (runtimeMount === null)`
-    // arm; runtime is the `else` arm).
-    // Both should be present and the script should reference both.
+    expect(html).toContain("runtimeMount + ");
+    expect(html).toContain("= serverConfigUrl");
     expect(html).toContain("runtimeMount === null");
   });
 });
