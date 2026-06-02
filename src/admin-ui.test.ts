@@ -157,3 +157,42 @@ describe("detectMount runtime behavior", () => {
     expect(extractAndRunDetectMount("/some/other/page")).toBeNull();
   });
 });
+
+describe("config UX additions (scribe config-UX PR)", () => {
+  test("renders inline backend-status containers for both provider selects", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain('id="status-transcribeProvider"');
+    expect(html).toContain('id="status-cleanupProvider"');
+  });
+
+  test("script fetches the backend-availability endpoint", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("/admin/backend-availability");
+    expect(html).toContain("checkAvailability");
+  });
+
+  test("promotes a labeled 'Cleanup tuning' section with both knobs", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("Cleanup tuning");
+    // Both fields still present, now inside the section.
+    expect(html).toContain('name="cleanupSystemPrompt"');
+    expect(html).toContain('name="cleanupContextTemplate"');
+    // Explains proper nouns are supplied per-request, not stored in config.
+    expect(html).toContain("per request");
+  });
+
+  test("wires the claude-code Refresh button + its endpoint", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("claude-refresh-btn");
+    expect(html).toContain("/admin/refresh-claude-token-status");
+    expect(html).toContain("Refresh status");
+  });
+
+  test("restart banner is unmistakable + names the restart command", () => {
+    const html = renderAdminPage("");
+    // Source carries the &mdash; entity (non-ASCII glyphs are unreliable
+    // inside the String.raw page-script block — see admin-ui.ts).
+    expect(html).toContain("Saved &mdash; but not live yet");
+    expect(html).toContain("parachute restart scribe");
+  });
+});

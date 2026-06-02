@@ -340,7 +340,12 @@ describe("GET /scribe/admin", () => {
     const handler = buildHandler("/tmp/unused");
     const res = await handler(new Request("http://localhost/scribe/admin"));
     const html = await res.text();
-    expect(html).toContain("Restart scribe to apply");
+    // Change 4 — restart-required banner copy. The phrasing now leads with
+    // "Saved — but not live yet" (rendered from the &mdash; entity) and spells
+    // out the exact restart command so the operator doesn't assume a new
+    // backend is live before restarting.
+    expect(html).toContain("Saved &mdash; but not live yet");
+    expect(html).toContain("parachute restart scribe");
     expect(html).toContain("Transcription provider");
     expect(html).toContain("Cleanup provider");
   });
@@ -382,5 +387,60 @@ describe("GET /scribe/admin", () => {
       }),
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe("GET /admin/backend-availability", () => {
+  let originalToken: string | undefined;
+
+  beforeEach(() => {
+    originalToken = process.env.SCRIBE_AUTH_TOKEN;
+  });
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env.SCRIBE_AUTH_TOKEN;
+    else process.env.SCRIBE_AUTH_TOKEN = originalToken;
+  });
+
+  test("open mode → 200 with transcribe + cleanup report shape", async () => {
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    // Inject a setup-token stub so the claude-code probe doesn't read the
+    // real ~/.claude.json on the test host.
+    const handler = buildHandler("/tmp/unused", {
+      setupTokenStatusFn: () => "not-configured",
+    });
+    const res = await handler(
+      new Request("http://localhost/admin/backend-availability"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      transcribe: Record<string, { status: string }>;
+      cleanup: Record<string, { status: string }>;
+    };
+    expect(body.transcribe).toBeObject();
+    expect(body.cleanup).toBeObject();
+    // Every backend gets a verdict with a status string.
+    expect(body.cleanup["none"]?.status).toBe("ok-no-check");
+    expect(typeof body.transcribe["onnx-asr"]?.status).toBe("string");
+  });
+
+  test("closed mode without bearer → 401 (scribe:admin gated)", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/admin/backend-availability"),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("POST to the availability endpoint → 404 (GET-only)", async () => {
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/admin/backend-availability", {
+        method: "POST",
+      }),
+    );
+    expect(res.status).toBe(404);
   });
 });
