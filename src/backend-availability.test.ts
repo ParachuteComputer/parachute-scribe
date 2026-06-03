@@ -267,6 +267,48 @@ describe("computeBackendAvailability — ollama + custom + none", () => {
     expect(v.detail).toContain("http://localhost:8080/v1");
   });
 
+  test("custom URL with embedded credentials → password not surfaced in detail", async () => {
+    // A custom endpoint of the form https://user:pass@host/v1 must not leak the
+    // embedded password into the admin-UI detail string. We echo only the
+    // credential-stripped origin + pathname.
+    const cfg: ScribeConfig = {
+      cleanupProviders: { custom: { url: "https://user:s3cr3t-pass@example.com/v1" } },
+    };
+    const report = await computeBackendAvailability({
+      which: whichWith([]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: cfg,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+    });
+    const v = report.cleanup["custom"]!;
+    expect(v.status).toBe("available");
+    // The password (and the userinfo separator) are gone…
+    expect(v.detail).not.toContain("s3cr3t-pass");
+    expect(v.detail).not.toContain("user:");
+    expect(v.detail).not.toContain("@");
+    // …but the operator still sees which host the endpoint points at.
+    expect(v.detail).toContain("https://example.com/v1");
+  });
+
+  test("custom URL that can't be parsed → generic echo-free detail", async () => {
+    // An unparseable URL falls back to a generic confirmation with no echo,
+    // rather than risk surfacing whatever the raw string contains.
+    const cfg: ScribeConfig = {
+      cleanupProviders: { custom: { url: "not a valid url with :pass@ in it" } },
+    };
+    const report = await computeBackendAvailability({
+      which: whichWith([]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: cfg,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+    });
+    const v = report.cleanup["custom"]!;
+    expect(v.status).toBe("available");
+    expect(v.detail).toBe("Endpoint URL set.");
+  });
+
   test("none → ok-no-check", async () => {
     const report = await computeBackendAvailability({
       which: whichWith([]),

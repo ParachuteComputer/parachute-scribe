@@ -318,7 +318,22 @@ function checkCustom(
       fix: "Set the endpoint URL below to your OpenAI-compatible server.",
     };
   }
-  return { status: "available", detail: `Endpoint URL set (${url}).` };
+  // Echo a credential-stripped display URL: a custom endpoint of the form
+  // `https://user:pass@host/v1` would otherwise surface the embedded password
+  // in the admin UI. Rebuild from origin + pathname (drops userinfo, query, and
+  // fragment too — none of which belong in a "URL set" confirmation). Fall back
+  // to a generic, echo-free message if the URL can't be parsed.
+  let display: string | null;
+  try {
+    const parsed = new URL(url);
+    display = parsed.origin + parsed.pathname;
+  } catch {
+    display = null;
+  }
+  return {
+    status: "available",
+    detail: display ? `Endpoint URL set (${display}).` : "Endpoint URL set.",
+  };
 }
 
 /**
