@@ -15,6 +15,18 @@ export type ProviderBlock = {
 };
 
 export type ScribeConfig = {
+  /**
+   * Auth block. `required_token` is the shared secret the hub's install-time
+   * auto-wire writes here (`{ auth: { required_token: "<value>" } }`) so a
+   * configured operator never has to hand-set an env var. Scribe bridges this
+   * into `SCRIBE_AUTH_TOKEN` at boot (see `bridgeConfigAuthToken` in
+   * `auth.ts`) when the env var isn't already set, so a token configured on
+   * disk actually enforces the bearer gate. Owned by the hub, not the admin
+   * SPA — it is intentionally NOT part of the `PUT /.parachute/config` shape.
+   */
+  auth?: {
+    required_token?: string;
+  };
   transcribe?: {
     provider?: string;
   };

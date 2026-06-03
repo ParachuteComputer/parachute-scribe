@@ -112,6 +112,38 @@ export function isAuthRequired(): boolean {
 }
 
 /**
+ * Bridge a token configured on disk (`config.json` `auth.required_token`)
+ * into `SCRIBE_AUTH_TOKEN` so the env-driven auth gate (`isAuthRequired` /
+ * `validateToken`) actually enforces it.
+ *
+ * The hub's install-time auto-wire writes the shared secret into scribe's
+ * `config.json` (`{ auth: { required_token: "<value>" } }`) but does NOT
+ * export `SCRIBE_AUTH_TOKEN` into scribe's process env. Without this bridge,
+ * `isAuthRequired()` (which reads only the env var) returns false even when a
+ * token IS configured — so scribe ran fully open despite the operator having
+ * set a secret. See scribe#66.
+ *
+ * Precedence: an explicit `SCRIBE_AUTH_TOKEN` in the env always wins — the
+ * operator (or a supervisor) set it deliberately, and we never silently
+ * override it with the on-disk value. Only when the env var is unset/blank do
+ * we adopt the config token. Returns the source that won so the caller can
+ * log it; mutates `env` in place (default `process.env`) so `validateToken`
+ * sees the bridged value.
+ */
+export function bridgeConfigAuthToken(
+  configuredToken: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): "env" | "config" | "none" {
+  const fromEnv = env.SCRIBE_AUTH_TOKEN;
+  if (fromEnv && fromEnv.trim()) return "env";
+  if (configuredToken && configuredToken.trim()) {
+    env.SCRIBE_AUTH_TOKEN = configuredToken;
+    return "config";
+  }
+  return "none";
+}
+
+/**
  * Operator footgun guard. The shared-secret compare in `validateToken` runs
  * AFTER the JWT-shape branch — so if SCRIBE_AUTH_TOKEN itself starts with
  * `eyJ` (the base64 prefix of a JWT header), inbound bearers matching that

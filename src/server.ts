@@ -41,12 +41,14 @@ import { renderAdminPage } from "./admin-ui.ts";
 import {
   SCOPE_ADMIN,
   SCOPE_TRANSCRIBE,
+  bridgeConfigAuthToken,
   enforceAuth,
   hasScope,
   insufficientScopeResponse,
   isAuthRequired,
   warnIfTokenLooksJwt,
 } from "./auth.ts";
+import { resolveBindHostname } from "./bind.ts";
 export type ServerDeps = {
   transcribe: ((file: File) => Promise<string>) | null;
   cleanup: Cleaner;
@@ -731,6 +733,14 @@ export async function startServer(opts: StartServerOptions = {}) {
   const config = await loadConfig();
   const mount = normalizeMount(opts.mount ?? "");
 
+  // Bridge a token configured on disk (`config.json` auth.required_token,
+  // written by the hub's install-time auto-wire) into SCRIBE_AUTH_TOKEN so the
+  // env-driven auth gate enforces it. Explicit env always wins. scribe#66.
+  const authSource = bridgeConfigAuthToken(config.auth?.required_token);
+  if (authSource === "config") {
+    console.log("  auth token: bridged from config.json auth.required_token");
+  }
+
   // Transcribe provider: config > env > built-in `parakeet-mlx` default.
   // When even the default isn't viable on the host (e.g. Render container
   // without MLX) the request-time call still raises a runtime error; the
@@ -764,11 +774,20 @@ export async function startServer(opts: StartServerOptions = {}) {
     port: PORT,
   };
 
-  console.log(`scribe listening on :${PORT} (port source: ${portResolution.source})`);
+  const hostname = resolveBindHostname();
+  console.log(`scribe listening on ${hostname}:${PORT} (port source: ${portResolution.source})`);
   console.log(`  transcribe: ${transcribeProviderName}`);
   console.log(`  cleanup:    ${CLEANUP}${CLEANUP !== "none" ? ` (default: ${CLEANUP_DEFAULT})` : ""}`);
   console.log(`  auth:       ${isAuthRequired() ? "bearer (SCRIBE_AUTH_TOKEN or hub JWT)" : "open"}`);
+  console.log(`  bind:       ${hostname}${hostname === "127.0.0.1" ? " (loopback — set SCRIBE_BIND to expose)" : ""}`);
   console.log(`  mount:      ${mount === "" ? "(none — bare routes at origin root)" : mount}`);
+  if (hostname !== "127.0.0.1" && !isAuthRequired()) {
+    console.warn(
+      `[scribe] WARNING: bound to ${hostname} (non-loopback) with auth OPEN — ` +
+        "anyone who can reach this port can transcribe + hit admin routes with no credential. " +
+        "Set SCRIBE_AUTH_TOKEN (or configure auth.required_token via the hub) before exposing scribe.",
+    );
+  }
   warnIfTokenLooksJwt();
 
   const handler = createFetchHandler({
@@ -781,7 +800,7 @@ export async function startServer(opts: StartServerOptions = {}) {
 
   try {
     Bun.serve({
-      hostname: "0.0.0.0",
+      hostname,
       port: PORT,
       fetch: handler,
     });

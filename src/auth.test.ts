@@ -3,6 +3,7 @@ import {
   AUTH_EXEMPT_PATHS,
   SCOPE_ADMIN,
   SCOPE_TRANSCRIBE,
+  bridgeConfigAuthToken,
   constantTimeStringEqual,
   enforceAuth,
   extractBearer,
@@ -262,6 +263,76 @@ describe("auth", () => {
     test("silent when SCRIBE_AUTH_TOKEN is unset (open mode)", () => {
       warnIfTokenLooksJwt();
       expect(warnings).toHaveLength(0);
+    });
+  });
+
+  describe("bridgeConfigAuthToken (config.json auth.required_token → env)", () => {
+    test("adopts the configured token when the env var is unset", () => {
+      const env: NodeJS.ProcessEnv = {};
+      const source = bridgeConfigAuthToken("cfg-secret", env);
+      expect(source).toBe("config");
+      expect(env.SCRIBE_AUTH_TOKEN).toBe("cfg-secret");
+    });
+
+    test("adopts the configured token when the env var is blank", () => {
+      const env: NodeJS.ProcessEnv = { SCRIBE_AUTH_TOKEN: "   " };
+      const source = bridgeConfigAuthToken("cfg-secret", env);
+      expect(source).toBe("config");
+      expect(env.SCRIBE_AUTH_TOKEN).toBe("cfg-secret");
+    });
+
+    test("explicit env value always wins over the config token", () => {
+      const env: NodeJS.ProcessEnv = { SCRIBE_AUTH_TOKEN: "env-secret" };
+      const source = bridgeConfigAuthToken("cfg-secret", env);
+      expect(source).toBe("env");
+      expect(env.SCRIBE_AUTH_TOKEN).toBe("env-secret");
+    });
+
+    test("no-op when neither env nor config carries a token (stays open)", () => {
+      const env: NodeJS.ProcessEnv = {};
+      const source = bridgeConfigAuthToken(undefined, env);
+      expect(source).toBe("none");
+      expect(env.SCRIBE_AUTH_TOKEN).toBeUndefined();
+    });
+
+    test("ignores a blank configured token (stays open)", () => {
+      const env: NodeJS.ProcessEnv = {};
+      const source = bridgeConfigAuthToken("   ", env);
+      expect(source).toBe("none");
+      expect(env.SCRIBE_AUTH_TOKEN).toBeUndefined();
+    });
+
+    test("bridged token enforces auth: 401 without, 200-equivalent (scopes) with", async () => {
+      const env: NodeJS.ProcessEnv = {};
+      bridgeConfigAuthToken("cfg-secret", env);
+      // Drive the real env-reading seam to prove the bridge enforces.
+      const original = process.env.SCRIBE_AUTH_TOKEN;
+      process.env.SCRIBE_AUTH_TOKEN = env.SCRIBE_AUTH_TOKEN;
+      try {
+        expect(isAuthRequired()).toBe(true);
+
+        const missing = await enforceAuth(
+          new Request("http://localhost/v1/models"),
+          "/v1/models",
+        );
+        expect(missing).toBeInstanceOf(Response);
+        expect((missing as Response).status).toBe(401);
+
+        const ok = await enforceAuth(
+          new Request("http://localhost/v1/models", {
+            headers: { Authorization: "Bearer cfg-secret" },
+          }),
+          "/v1/models",
+        );
+        expect(ok).not.toBeInstanceOf(Response);
+        if (!(ok instanceof Response)) {
+          expect(ok.scopes).toContain(SCOPE_TRANSCRIBE);
+          expect(ok.scopes).toContain(SCOPE_ADMIN);
+        }
+      } finally {
+        if (original === undefined) delete process.env.SCRIBE_AUTH_TOKEN;
+        else process.env.SCRIBE_AUTH_TOKEN = original;
+      }
     });
   });
 
