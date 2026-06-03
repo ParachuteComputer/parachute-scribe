@@ -35,6 +35,7 @@ import {
   writeConfigFileAtomic,
 } from "./config-write.ts";
 import { readSetupTokenStatus } from "./claude-token-status.ts";
+import { computeBackendAvailability } from "./backend-availability.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import {
   SCOPE_ADMIN,
@@ -164,6 +165,9 @@ async function route(
 
   // Admin actions live under /admin/* — refresh-claude-token-status and
   // clear-credential (Phase 2 polish from scribe#47).
+  if (internalPath === "/admin/backend-availability" && req.method === "GET") {
+    return handleBackendAvailability(deps);
+  }
   if (internalPath === "/admin/refresh-claude-token-status" && req.method === "POST") {
     return handleRefreshSetupTokenStatus(deps);
   }
@@ -234,6 +238,37 @@ function handleConfigGet(deps: ServerDeps): Response {
     setupTokenStatusFn: deps.setupTokenStatusFn,
   });
   return Response.json(resolved);
+}
+
+/**
+ * `GET /admin/backend-availability` — probe every transcription + cleanup
+ * backend's real prerequisite (CLI on PATH, API key present, URL reachable)
+ * and return a structured report the SPA renders inline next to each backend
+ * select.
+ *
+ * The pain this fixes: selecting a backend whose dependency isn't installed
+ * SAVES fine, then fails opaquely (`exit 127`) only at the first
+ * transcription. This endpoint surfaces the missing dependency at config
+ * time with the exact fix — warn, never block. Each per-backend probe is
+ * try/caught inside `computeBackendAvailability` so a flaky check degrades to
+ * `"unknown"` rather than failing the whole response. The outer try/catch is
+ * belt-and-braces: a top-level failure still returns a 200 with an empty
+ * report so the page never breaks on this advisory endpoint.
+ */
+async function handleBackendAvailability(deps: ServerDeps): Promise<Response> {
+  try {
+    const report = await computeBackendAvailability({
+      scribeConfig: deps.scribeConfig,
+      setupTokenStatusFn: deps.setupTokenStatusFn,
+    });
+    return Response.json(report);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[scribe] backend-availability check failed: ${message}`);
+    // Advisory endpoint — never 500 the SPA over it. Return an empty report;
+    // the page falls back to "couldn't determine" for every backend.
+    return Response.json({ transcribe: {}, cleanup: {} });
+  }
 }
 
 /**

@@ -104,12 +104,17 @@ export function renderAdminPage(mount = ""): string {
             <span class="field-label">Transcription provider</span>
             <select name="transcribeProvider" id="f-transcribeProvider"></select>
             <span class="field-hint" id="hint-transcribeProvider">Engine used to turn audio into text.</span>
+            <!-- Inline availability status for the SELECTED transcription
+                 backend. Populated by checkAvailability() — ✓ available, or
+                 ⚠ with the exact fix. Non-blocking: it never prevents save. -->
+            <div class="backend-status" id="status-transcribeProvider" hidden></div>
           </label>
 
           <label class="field">
             <span class="field-label">Cleanup provider</span>
             <select name="cleanupProvider" id="f-cleanupProvider"></select>
             <span class="field-hint" id="hint-cleanupProvider">Optional LLM pass — pick "none" to skip cleanup.</span>
+            <div class="backend-status" id="status-cleanupProvider" hidden></div>
           </label>
 
           <label class="field field-inline">
@@ -118,17 +123,38 @@ export function renderAdminPage(mount = ""): string {
             <span class="field-hint" id="hint-cleanupDefault">Applied when a transcription request omits an explicit cleanup flag.</span>
           </label>
 
-          <label class="field">
-            <span class="field-label">Cleanup system prompt</span>
-            <textarea name="cleanupSystemPrompt" id="f-cleanupSystemPrompt" rows="10" placeholder="Leave empty to use scribe's built-in prompt."></textarea>
-            <span class="field-hint">Full override of the built-in cleanup system prompt. The proper-nouns block from the request payload is still appended after this.</span>
-          </label>
+          <!-- Cleanup tuning — promoted into its own labeled section so the
+               system-prompt + proper-nouns knobs are discoverable, not buried
+               below the provider selects. -->
+          <div class="section" id="cleanup-tuning">
+            <div class="section-head">
+              <h2 class="section-title">Cleanup tuning</h2>
+              <p class="section-desc">
+                Shape how the cleanup LLM rewrites raw transcripts. Both fields are optional —
+                leave them empty to use scribe's built-in defaults.
+              </p>
+            </div>
 
-          <label class="field">
-            <span class="field-label">Cleanup context template</span>
-            <textarea name="cleanupContextTemplate" id="f-cleanupContextTemplate" rows="4" placeholder="e.g. \\n\\nKnown names: {{proper_nouns}}"></textarea>
-            <span class="field-hint">Template for the proper-nouns block. Use <code>{{proper_nouns}}</code> as the placeholder. Leave empty to use scribe's default rule.</span>
-          </label>
+            <label class="field">
+              <span class="field-label">Cleanup system prompt</span>
+              <textarea name="cleanupSystemPrompt" id="f-cleanupSystemPrompt" rows="10" placeholder="Leave empty to use scribe's built-in prompt."></textarea>
+              <span class="field-hint">
+                A full override of scribe's built-in cleanup instructions (filler-word removal, punctuation, formatting).
+                The proper-nouns / vocabulary block is still appended after this.
+              </span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Proper-nouns / vocabulary template</span>
+              <textarea name="cleanupContextTemplate" id="f-cleanupContextTemplate" rows="4" placeholder="e.g. \\n\\nKnown names &amp; terms: {{proper_nouns}}"></textarea>
+              <span class="field-hint">
+                Controls how vocabulary hints are appended to the prompt. Use <code>{{proper_nouns}}</code> as the placeholder.
+                Leave empty to use scribe's default rule.
+                <strong>Note:</strong> the proper nouns themselves are supplied <em>per request</em> (in the transcription
+                request's <code>context</code> part) — they are not stored here. This field only sets the wrapping template.
+              </span>
+            </label>
+          </div>
         </fieldset>
 
         <div class="button-row" id="button-row" hidden>
@@ -390,6 +416,94 @@ const STYLES = `
     font-weight: 500;
   }
 
+  /* Inline per-backend availability status — sits directly under the
+     provider select it describes. Three visual states keyed off the
+     server-computed verdict: ok (green ✓), warn (amber ⚠ + fix), unknown
+     (muted). NON-BLOCKING by design — purely advisory. */
+  .backend-status {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.45rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    border: 1px solid transparent;
+  }
+  .backend-status .bs-line { display: flex; align-items: baseline; gap: 0.4rem; }
+  .backend-status .bs-icon { font-size: 0.9rem; line-height: 1; }
+  .backend-status .bs-detail { font-weight: 500; }
+  .backend-status .bs-fix {
+    margin: 0;
+    font-weight: 400;
+    line-height: 1.45;
+    opacity: 0.95;
+  }
+  .backend-status code {
+    font-family: ${FONT_MONO};
+    font-size: 0.85em;
+    background: rgba(0,0,0,0.05);
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+  }
+  .backend-status .bs-actions { margin-top: 0.35rem; }
+  .bs-ok {
+    background: ${PALETTE.successSoft};
+    border-color: ${PALETTE.success};
+    color: ${PALETTE.success};
+  }
+  .bs-warn {
+    background: ${PALETTE.dangerSoft};
+    border-color: ${PALETTE.danger};
+    color: ${PALETTE.danger};
+  }
+  .bs-unknown {
+    background: ${PALETTE.bgSoft};
+    border-color: ${PALETTE.border};
+    color: ${PALETTE.fgMuted};
+  }
+  /* A small inline button used inside a backend-status block (the claude-code
+     Refresh affordance). Smaller than the form buttons; inherits the status
+     color for its border so it reads as part of the block. */
+  .bs-btn {
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 0.3rem 0.7rem;
+    border-radius: 5px;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .bs-btn:hover { background: rgba(0,0,0,0.06); }
+  .bs-btn:disabled { opacity: 0.6; cursor: progress; }
+
+  /* Cleanup tuning section — a labeled, visually-separated block so the
+     prompt + vocabulary knobs are discoverable instead of buried. */
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid ${PALETTE.borderLight};
+  }
+  .section-head { display: flex; flex-direction: column; gap: 0.3rem; }
+  .section-title {
+    font-family: ${FONT_SERIF};
+    font-weight: 400;
+    font-size: 1.2rem;
+    margin: 0;
+    color: ${PALETTE.fg};
+  }
+  .section-desc {
+    margin: 0;
+    font-size: 0.85rem;
+    color: ${PALETTE.fgMuted};
+  }
+  .field-hint em { font-style: italic; }
+
   select, textarea, input[type=text], input[type=number] {
     font: inherit;
     width: 100%;
@@ -478,6 +592,11 @@ const STYLES = `
     .btn-secondary:hover { color: #e8e4dc; border-color: #6b6860; }
     .card-footer { border-color: #3a362f; }
     fieldset.loading { background: #1f1c18; }
+    .section { border-color: #3a362f; }
+    .section-title { color: #f0ece4; }
+    .section-desc { color: #a8a29a; }
+    .backend-status code { background: rgba(255,255,255,0.08); }
+    .bs-btn:hover { background: rgba(255,255,255,0.08); }
   }
 
   @media (max-width: 600px) {
@@ -510,6 +629,11 @@ const PAGE_SCRIPT = String.raw`
     cleanupProvider: "Cleanup provider",
     port: "Server port",
   };
+
+  // Latest backend-availability report (set by checkAvailability). Keyed by
+  // { transcribe: {name: {...}}, cleanup: {name: {...}} }. Held so a provider
+  // select-change can re-render the inline status without another fetch.
+  var AVAILABILITY = null;
 
   function el(id) { return document.getElementById(id); }
 
@@ -595,6 +719,119 @@ const PAGE_SCRIPT = String.raw`
     el(FIELD_IDS.cleanupContextTemplate).value = current.cleanupContextTemplate || "";
   }
 
+  // --- Backend availability (Change 1) -------------------------------------
+  //
+  // Fetch the server-side report and render the inline status for whatever
+  // backend is currently SELECTED in each provider dropdown. The report is
+  // advisory: we never disable Save based on it. A failed fetch leaves the
+  // status blocks hidden rather than erroring the page.
+
+  var STATUS_IDS = {
+    transcribeProvider: "status-transcribeProvider",
+    cleanupProvider: "status-cleanupProvider",
+  };
+
+  // Build the inner HTML for one status block from a verdict object.
+  function renderStatusInner(verdict, opts) {
+    opts = opts || {};
+    // Icons as HTML numeric entities -- NOT literal glyphs. This page-script
+    // string is a String.raw template, where non-ASCII source characters are
+    // unreliable (Bun's transpile can emit them as literal backslash-u escapes
+    // that String.raw then preserves verbatim). ASCII entities render fine via
+    // innerHTML on every browser: check = &#10003;, warn = &#9888;, info =
+    // &#8505;.
+    var icon;
+    var cls;
+    if (verdict.status === "available") { icon = "&#10003;"; cls = "bs-ok"; }
+    else if (verdict.status === "unavailable" || verdict.status === "warning") { icon = "&#9888;"; cls = "bs-warn"; }
+    else { icon = "&#8505;"; cls = "bs-unknown"; } // unknown / ok-no-check fall here; ok-no-check is filtered before render
+
+    var html = '<div class="bs-line"><span class="bs-icon">' + icon + '</span>' +
+      '<span class="bs-detail">' + escapeHtml(verdict.detail || "") + "</span></div>";
+    if (verdict.fix) {
+      html += '<p class="bs-fix">' + escapeHtml(verdict.fix) + "</p>";
+    }
+    if (opts.refreshButton) {
+      // The claude-code Refresh affordance (Change 3) -- re-reads the
+      // setup-token status + re-runs the availability probe in place.
+      html += '<div class="bs-actions">' +
+        '<button type="button" class="bs-btn" id="claude-refresh-btn">Refresh status</button>' +
+        "</div>";
+    }
+    return { html: html, cls: cls };
+  }
+
+  function renderBackendStatus(blockId, verdict, opts) {
+    var node = el(blockId);
+    if (!node) return;
+    // ok-no-check (e.g. cleanup "none", or a provider with no local dep AND no
+    // key requirement) -> nothing useful to show; keep the block hidden.
+    if (!verdict || verdict.status === "ok-no-check") {
+      node.hidden = true;
+      node.innerHTML = "";
+      node.className = "backend-status";
+      return;
+    }
+    var r = renderStatusInner(verdict, opts);
+    node.className = "backend-status " + r.cls;
+    node.innerHTML = r.html;
+    node.hidden = false;
+  }
+
+  // Re-render both inline status blocks for the currently-selected providers.
+  function refreshStatusDisplay() {
+    if (!AVAILABILITY) return;
+    var tName = el(FIELD_IDS.transcribeProvider).value;
+    var cName = el(FIELD_IDS.cleanupProvider).value;
+    var tVerdict = (AVAILABILITY.transcribe || {})[tName];
+    var cVerdict = (AVAILABILITY.cleanup || {})[cName];
+    renderBackendStatus(STATUS_IDS.transcribeProvider, tVerdict, {});
+    // The claude-code cleanup block gets the inline Refresh button.
+    renderBackendStatus(STATUS_IDS.cleanupProvider, cVerdict, {
+      refreshButton: cName === "claude-code",
+    });
+    wireClaudeRefresh();
+  }
+
+  async function checkAvailability() {
+    var base = (window.__SCRIBE_CONFIG_URL__ || "/.parachute/config").replace(/\/\.parachute\/config$/, "");
+    var url = base + "/admin/backend-availability";
+    try {
+      var res = await fetch(url);
+      if (!res.ok) return; // advisory: leave status hidden on non-200
+      AVAILABILITY = await res.json();
+      refreshStatusDisplay();
+    } catch (_e) {
+      // Network/parse failure -- advisory endpoint, swallow silently.
+    }
+  }
+
+  // --- claude-code Refresh button (Change 3) -------------------------------
+  function wireClaudeRefresh() {
+    var btn = el("claude-refresh-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async function () {
+      btn.disabled = true;
+      var prev = btn.textContent;
+      // Plain ASCII "..." -- a literal ellipsis glyph in this String.raw block
+      // renders as a visible backslash-u escape in the served JS (Bun transpile
+      // + String.raw quirk). textContent can't use an HTML entity, so use "...".
+      btn.textContent = "Refreshing...";
+      var base = (window.__SCRIBE_CONFIG_URL__ || "/.parachute/config").replace(/\/\.parachute\/config$/, "");
+      try {
+        // POST /admin/refresh-claude-token-status re-reads ~/.claude.json. We
+        // then re-run the full availability probe so the inline status (CLI
+        // presence + token) updates in place without a page reload.
+        await fetch(base + "/admin/refresh-claude-token-status", { method: "POST" });
+      } catch (_e) { /* fall through to re-probe */ }
+      await checkAvailability();
+      // checkAvailability re-renders + re-wires; if it failed, restore the
+      // button so the operator can retry.
+      var stillThere = el("claude-refresh-btn");
+      if (stillThere) { stillThere.disabled = false; stillThere.textContent = prev; }
+    });
+  }
+
   async function loadConfig() {
     clearBanner();
     clearFieldErrors();
@@ -626,6 +863,9 @@ const PAGE_SCRIPT = String.raw`
       el("form-loading").hidden = true;
       el("form-body").hidden = false;
       el("button-row").hidden = false;
+      // Inline backend-availability status (Change 1) -- fire after the form
+      // is visible so a slow/failing probe never blocks rendering the config.
+      checkAvailability();
     } catch (err) {
       el("form-loading").hidden = true;
       setBanner(
@@ -641,7 +881,9 @@ const PAGE_SCRIPT = String.raw`
     clearFieldErrors();
     const saveBtn = el("save-btn");
     saveBtn.disabled = true;
-    saveBtn.textContent = "Saving…";
+    // ASCII "..." -- see the Refreshing button note: a literal ellipsis renders
+    // as a visible backslash-u escape in this String.raw page-script.
+    saveBtn.textContent = "Saving...";
 
     const body = collectForm();
     let res;
@@ -685,10 +927,10 @@ const PAGE_SCRIPT = String.raw`
     } else {
       const restart = (payload && payload.restart_required) || [];
       if (restart.length === 0) {
-        setBanner("success", "<strong>Configuration saved.</strong> Changes take effect immediately.");
+        setBanner("success", "<strong>Configuration saved.</strong> Changes take effect immediately &mdash; no restart needed.");
       } else {
         const items = restart.map(function (f) {
-          return "<li><code>" + escapeHtml(f) + "</code> — " + escapeHtml(RESTART_LABELS[f] || f) + "</li>";
+          return "<li><code>" + escapeHtml(f) + "</code> &mdash; " + escapeHtml(RESTART_LABELS[f] || f) + "</li>";
         }).join("");
         // Surface the port-is-not-in-config.json gotcha: when 'port' shows
         // up in restart_required, an unwary operator will edit config.json
@@ -699,11 +941,25 @@ const PAGE_SCRIPT = String.raw`
         const portNote = restart.indexOf("port") !== -1
           ? "<p class=\"banner-footnote\">Note: <code>port</code> is set via <code>services.json</code> or the <code>SCRIBE_PORT</code> environment variable, not <code>config.json</code>.</p>"
           : "";
+        // Change 4 -- make restart-required unmistakable + actionable. The
+        // saved value is on disk but the RUNNING server still uses the old
+        // provider until restart; an operator who doesn't restart thinks the
+        // new backend is live when it isn't. Spell out HOW to restart.
+        // Banner copy uses the &mdash; entity, not a literal em-dash -- see the
+        // icon-entity note above; non-ASCII glyphs in this String.raw block are
+        // unreliable. innerHTML renders &mdash; as the em-dash.
         setBanner(
           "success",
-          "<strong>Configuration saved.</strong> Restart scribe to apply these changes:<ul>" + items + "</ul>" + portNote
+          "<strong>Saved &mdash; but not live yet.</strong> These changes only take effect after you restart scribe:" +
+            "<ul>" + items + "</ul>" +
+            "<p class=\"banner-footnote\">Restart now: run <code>parachute restart scribe</code> (or restart it however you run scribe). " +
+            "Until you do, the server keeps using the previous setting.</p>" +
+            portNote
         );
       }
+      // A successful save can change availability (e.g. an API key was just
+      // stored) -- re-probe so the inline status reflects reality immediately.
+      checkAvailability();
     }
 
     saveBtn.disabled = false;
@@ -713,6 +969,11 @@ const PAGE_SCRIPT = String.raw`
   document.addEventListener("DOMContentLoaded", function () {
     el("config-form").addEventListener("submit", saveConfig);
     el("reload-btn").addEventListener("click", loadConfig);
+    // When the operator picks a different backend, re-render the inline
+    // availability status for the newly-selected one from the cached report
+    // (no refetch needed -- the report covers every backend).
+    el(FIELD_IDS.transcribeProvider).addEventListener("change", refreshStatusDisplay);
+    el(FIELD_IDS.cleanupProvider).addEventListener("change", refreshStatusDisplay);
     loadConfig();
   });
 `;
