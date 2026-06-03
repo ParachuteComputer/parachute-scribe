@@ -43,6 +43,16 @@ describe("config loading + legacy migration", () => {
     expect(cfg.cleanup?.provider).toBe("ollama");
   });
 
+  test("surfaces the auth.required_token block the hub auto-wire writes (scribe#66)", async () => {
+    mkdirSync(join(home, "scribe"), { recursive: true });
+    writeFileSync(
+      join(home, "scribe", "config.json"),
+      JSON.stringify({ auth: { required_token: "hub-wired-secret" } }),
+    );
+    const cfg = await loadConfig();
+    expect(cfg.auth?.required_token).toBe("hub-wired-secret");
+  });
+
   test("migrates legacy config on first load and reads contents", async () => {
     const legacy = join(home, "scribe.config.json");
     const canonical = join(home, "scribe", "config.json");

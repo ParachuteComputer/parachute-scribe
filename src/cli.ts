@@ -44,8 +44,11 @@ Environment:
   SCRIBE_CONFIG                       Path to config.json (default: ~/.parachute/scribe/config.json)
   PARACHUTE_HOME                      Override ~/.parachute base (e.g. Docker: /app/.parachute)
   SCRIBE_PORT                         Server port (default: 1943; PORT also honored)
+  SCRIBE_BIND                         Bind address (default: 127.0.0.1 loopback;
+                                      set 0.0.0.0 to expose on all interfaces)
   SCRIBE_AUTH_TOKEN                   Require Bearer <token> on all routes except
-                                      /health and /.parachute/info (optional)
+                                      /health and /.parachute/info (optional;
+                                      also bridged from config.json auth.required_token)
   SCRIBE_URL_MAX_BYTES                Max bytes for /transcribe-url downloads (default: 100 MiB)
   SCRIBE_URL_TIMEOUT_MS               Timeout for /transcribe-url downloads (default: 5 min)
 

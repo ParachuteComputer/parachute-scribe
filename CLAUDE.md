@@ -23,7 +23,8 @@ Library (import transcribe)    ─┘
 ## Key design decisions
 
 - **Stateless by design** — scribe never initiates outbound HTTP. Callers provide whatever context they want cleaned-up around (names, project glossary) in the request payload via the `context` multipart part. The built-in vault client was removed in 0.3.0 (stateless-scribe initiative complete). A stale `vault:` block in an old config logs a one-time warning and is ignored.
-- **Auth gate is opt-in** — `SCRIBE_AUTH_TOKEN` unset = open (loopback-trusted). Set = require `Authorization: Bearer <token>` on every route except `/health` and `/.parachute/info` (liveness probes and module discovery stay open so hub/CLI can reach scribe without knowing a secret). 401 responses carry full CORS headers so browser clients can read the error.
+- **Loopback bind by default** — `Bun.serve` binds `127.0.0.1` (via `src/bind.ts:resolveBindHostname`, `SCRIBE_BIND` override; mirrors vault's `VAULT_BIND`). The hub proxies `/<mount>/*` from :1939 → scribe and vault's transcription worker calls `http://127.0.0.1:1943`, both over loopback — so loopback-default breaks no documented path. Set `SCRIBE_BIND=0.0.0.0` for Docker bridge networking or an intentional LAN exposure. (Pre-scribe#66 scribe bound `0.0.0.0` unconditionally.)
+- **Auth gate is opt-in, and a configured token actually enforces** — `SCRIBE_AUTH_TOKEN` unset = open (loopback-trusted). Set = require `Authorization: Bearer <token>` on every route except `/health` and `/.parachute/info` (liveness probes and module discovery stay open so hub/CLI can reach scribe without knowing a secret). The hub's install-time auto-wire writes the shared secret into `config.json` (`auth.required_token`); scribe bridges that into `SCRIBE_AUTH_TOKEN` at boot (`bridgeConfigAuthToken` in `src/auth.ts`) when the env var isn't already set, so a token configured on disk enforces the gate — an explicit env value always wins. (Pre-scribe#66 the config token was never read, so a configured scribe still ran open.) 401 responses carry full CORS headers so browser clients can read the error.
 - **Scopes declared, not yet enforced** — `scribe:transcribe` + `scribe:admin` are listed under `x-scopes` in the config schema. When the hub starts issuing JWTs, scribe enforces without an API-shape change.
 - **Provider resolution precedence**: `--flag` > `config.json` > env > default. Same three-tier pattern for every knob.
 - **Fail loud, not silent** — malformed `services.json` throws rather than get overwritten (protects sibling services' entries). Malformed config.json throws with the file path in the error.
@@ -57,7 +58,9 @@ Env knobs (full list in `src/cli.ts` `usage()` and `.env.example`):
 
 ```
 SCRIBE_PORT=1943              # server port. PORT also honored for PaaS back-compat.
+SCRIBE_BIND=127.0.0.1         # bind address. Loopback default; 0.0.0.0 to expose.
 SCRIBE_AUTH_TOKEN=            # optional; when set, bearer required on non-exempt routes.
+                              # Also bridged from config.json auth.required_token at boot.
 PARACHUTE_HOME=~/.parachute   # ecosystem root. Overrides default.
 TRANSCRIBE_PROVIDER=parakeet-mlx
 CLEANUP_PROVIDER=none
