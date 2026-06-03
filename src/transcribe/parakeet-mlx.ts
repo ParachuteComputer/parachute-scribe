@@ -1,4 +1,9 @@
 import { $ } from "bun";
+import {
+  FFMPEG_MISSING_MESSAGE,
+  TranscribeBackendError,
+  looksLikeFfmpegMissing,
+} from "./backend-error.ts";
 
 export async function transcribe(audio: File): Promise<string> {
   const id = crypto.randomUUID();
@@ -13,6 +18,12 @@ export async function transcribe(audio: File): Promise<string> {
       .nothrow()
       .quiet();
 
+    // Capture BOTH streams: parakeet-mlx shells to ffmpeg internally and,
+    // when ffmpeg is missing, prints the error then exits 0 (so the
+    // exitCode gate below never fires) — the signature is the only signal.
+    const combined =
+      result.stdout.toString() + "\n" + result.stderr.toString();
+
     if (result.exitCode !== 0) {
       const stderr = result.stderr.toString().trim();
       throw new Error(
@@ -26,7 +37,15 @@ export async function transcribe(audio: File): Promise<string> {
       // parakeet-mlx may use the original filename stem
       const files = await Array.fromAsync(new Bun.Glob("*.txt").scan(tmpDir));
       if (files.length === 0) {
-        throw new Error(`No .txt output found in ${tmpDir}`);
+        // No output AND the tool exited 0 — the classic ffmpeg-missing mask.
+        // Promote to a typed error so the HTTP layer returns an actionable
+        // 503 instead of an opaque 500.
+        if (looksLikeFfmpegMissing(combined)) {
+          throw new TranscribeBackendError("ffmpeg_unavailable", FFMPEG_MISSING_MESSAGE);
+        }
+        throw new Error(
+          `No .txt output found in ${tmpDir} — the backend produced no output, often a missing system dependency (ffmpeg).`,
+        );
       }
       return (await Bun.file(`${tmpDir}/${files[0]}`).text()).trim();
     }

@@ -35,7 +35,8 @@ import {
   writeConfigFileAtomic,
 } from "./config-write.ts";
 import { readSetupTokenStatus } from "./claude-token-status.ts";
-import { computeBackendAvailability } from "./backend-availability.ts";
+import { computeBackendAvailability, type ClaudeProbeFn } from "./backend-availability.ts";
+import { TranscribeBackendError } from "./transcribe/backend-error.ts";
 import { renderAdminPage } from "./admin-ui.ts";
 import {
   SCOPE_ADMIN,
@@ -67,6 +68,13 @@ export type ServerDeps = {
    * this instead of reading `~/.claude.json`. Production never passes it.
    */
   setupTokenStatusFn?: () => ReturnType<typeof readSetupTokenStatus>;
+  /**
+   * Optional seam for the live `claude -p` auth probe (the `?probe=1` path on
+   * `/admin/backend-availability`). When set, the handler forwards it to
+   * `computeBackendAvailability` so tests never spawn a real `claude`.
+   * Production leaves it undefined → the real subprocess probe is used.
+   */
+  claudeProbeFn?: ClaudeProbeFn;
   /**
    * Mount prefix this scribe instance answers under. Default `""` means
    * "bare routes at the origin root" — legacy behavior, unchanged for
@@ -166,7 +174,10 @@ async function route(
   // Admin actions live under /admin/* — refresh-claude-token-status and
   // clear-credential (Phase 2 polish from scribe#47).
   if (internalPath === "/admin/backend-availability" && req.method === "GET") {
-    return handleBackendAvailability(deps);
+    // `?probe=1` opts into the live `claude -p` auth probe (the SPA's Refresh
+    // button sends it). Absent → fast, file-token-only path (no subprocess).
+    const probeClaude = url.searchParams.get("probe") === "1";
+    return handleBackendAvailability(deps, probeClaude);
   }
   if (internalPath === "/admin/refresh-claude-token-status" && req.method === "POST") {
     return handleRefreshSetupTokenStatus(deps);
@@ -255,11 +266,16 @@ function handleConfigGet(deps: ServerDeps): Response {
  * belt-and-braces: a top-level failure still returns a 200 with an empty
  * report so the page never breaks on this advisory endpoint.
  */
-async function handleBackendAvailability(deps: ServerDeps): Promise<Response> {
+async function handleBackendAvailability(
+  deps: ServerDeps,
+  probeClaude = false,
+): Promise<Response> {
   try {
     const report = await computeBackendAvailability({
       scribeConfig: deps.scribeConfig,
       setupTokenStatusFn: deps.setupTokenStatusFn,
+      probeClaude,
+      claudeProbeFn: deps.claudeProbeFn,
     });
     return Response.json(report);
   } catch (err) {
@@ -604,11 +620,23 @@ export async function runTranscribePipeline(
   try {
     text = await deps.transcribe(file);
   } catch (err: unknown) {
+    // A typed backend error (e.g. ffmpeg missing) is a structured,
+    // operator-fixable failure — return a stable `backend_unavailable` 503
+    // mirroring the `missing_provider` 400 path, so the cause + fix reach the
+    // caller (and vault's transcription worker) instead of an opaque 500.
+    if (err instanceof TranscribeBackendError) {
+      return backendUnavailableResponse(err);
+    }
     const message = err instanceof Error ? err.message : "transcription failed";
     console.error("Transcription error:", message);
     return Response.json({ error: message }, { status: 500 });
   }
 
+  // Cleanup outcome, surfaced on the response so a skipped cleanup is no
+  // longer silent (Part 2 / finding C). `applied:false` carries the short
+  // error; the raw transcript is still returned with a 200 (semantics
+  // unchanged — additive field only).
+  let cleanup: CleanupOutcome | undefined;
   if (doCleanup) {
     try {
       const properNouns = contextPayload
@@ -618,13 +646,54 @@ export async function runTranscribePipeline(
         systemPrompt: deps.scribeConfig.cleanup?.system_prompt,
         contextTemplate: deps.scribeConfig.cleanup?.context_template,
       });
+      cleanup = { applied: true, provider: cleanupProvider };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`Cleanup failed (provider=${cleanupProvider}): ${message} — returning raw transcription`);
+      cleanup = { applied: false, provider: cleanupProvider, error: message };
+      // Unmissable WARNING — the operator must know the returned transcript is
+      // RAW (proper-noun correction NOT applied), not the cleaned text they
+      // configured. (Previously a single quiet console.error.)
+      console.error(
+        `[scribe] WARNING: cleanup skipped (provider=${cleanupProvider}): ${message} — RAW transcript returned, proper-noun correction NOT applied`,
+      );
     }
   }
 
-  return Response.json(source ? { text, source } : { text });
+  const body: { text: string; source?: typeof source; cleanup?: CleanupOutcome } = { text };
+  if (source) body.source = source;
+  if (cleanup) body.cleanup = cleanup;
+  return Response.json(body);
+}
+
+/**
+ * Cleanup outcome surfaced on the transcribe response. Additive +
+ * backwards-compatible: present only when cleanup was attempted (i.e. a
+ * cleanup provider other than `none` was selected for the request). Callers
+ * that don't know the field ignore it; callers that do can detect "raw
+ * transcript returned because cleanup failed" without parsing logs.
+ */
+type CleanupOutcome =
+  | { applied: true; provider: string }
+  | { applied: false; provider: string; error: string };
+
+/**
+ * Structured 503 for a typed transcription-backend failure (today: ffmpeg
+ * missing). Mirrors `missingProviderResponse`'s shape so vault's worker —
+ * which JSON-parses `{error, error_code, message}` — gets a clean,
+ * branch-able body. 503 (≥500) is retriable in vault's `callScribe`, which is
+ * the desired behavior: the operator installs ffmpeg and the next sweep
+ * succeeds without a manual re-queue.
+ */
+function backendUnavailableResponse(err: TranscribeBackendError): Response {
+  console.error(`[scribe] transcription backend unavailable (${err.code}): ${err.message}`);
+  return Response.json(
+    {
+      error: err.message,
+      error_code: "backend_unavailable",
+      message: err.message,
+    },
+    { status: 503 },
+  );
 }
 
 function guardMissingProvider(deps: ServerDeps): Response | null {

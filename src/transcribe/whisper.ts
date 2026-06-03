@@ -1,5 +1,10 @@
 import { $ } from "bun";
 import { getTranscribeProviderConfig } from "../provider-config.ts";
+import {
+  FFMPEG_MISSING_MESSAGE,
+  TranscribeBackendError,
+  looksLikeFfmpegMissing,
+} from "./backend-error.ts";
 
 export async function transcribe(audio: File): Promise<string> {
   const id = crypto.randomUUID();
@@ -17,6 +22,12 @@ export async function transcribe(audio: File): Promise<string> {
       .nothrow()
       .quiet();
 
+    // Capture BOTH streams: whisper-ctranslate2 shells to ffmpeg internally;
+    // a missing ffmpeg can print an error yet exit 0 with no output — the
+    // signature in the combined output is the only signal.
+    const combined =
+      result.stdout.toString() + "\n" + result.stderr.toString();
+
     if (result.exitCode !== 0) {
       const stderr = result.stderr.toString().trim();
       throw new Error(
@@ -32,7 +43,12 @@ export async function transcribe(audio: File): Promise<string> {
     if (!(await file.exists())) {
       const files = await Array.fromAsync(new Bun.Glob("*.txt").scan(tmpDir));
       if (files.length === 0) {
-        throw new Error(`No .txt output found in ${tmpDir}`);
+        if (looksLikeFfmpegMissing(combined)) {
+          throw new TranscribeBackendError("ffmpeg_unavailable", FFMPEG_MISSING_MESSAGE);
+        }
+        throw new Error(
+          `No .txt output found in ${tmpDir} — the backend produced no output, often a missing system dependency (ffmpeg).`,
+        );
       }
       return (await Bun.file(`${tmpDir}/${files[0]}`).text()).trim();
     }

@@ -743,7 +743,7 @@ const PAGE_SCRIPT = String.raw`
     var icon;
     var cls;
     if (verdict.status === "available") { icon = "&#10003;"; cls = "bs-ok"; }
-    else if (verdict.status === "unavailable" || verdict.status === "warning") { icon = "&#9888;"; cls = "bs-warn"; }
+    else if (verdict.status === "unavailable" || verdict.status === "warning" || verdict.status === "unauthenticated") { icon = "&#9888;"; cls = "bs-warn"; }
     else { icon = "&#8505;"; cls = "bs-unknown"; } // unknown / ok-no-check fall here; ok-no-check is filtered before render
 
     var html = '<div class="bs-line"><span class="bs-icon">' + icon + '</span>' +
@@ -793,9 +793,15 @@ const PAGE_SCRIPT = String.raw`
     wireClaudeRefresh();
   }
 
-  async function checkAvailability() {
+  // "probe" opts into the live "claude -p" auth probe server-side (?probe=1).
+  // Initial page load passes it falsy (fast, file-token only -- no subprocess
+  // spawned on every page view); the claude-code Refresh button passes true so
+  // the operator gets an authoritative auth verdict (the file-token read is
+  // unreliable on macOS under launchd). NB: avoid backticks in this comment --
+  // this whole block is a String.raw template; a backtick would close it early.
+  async function checkAvailability(probe) {
     var base = (window.__SCRIBE_CONFIG_URL__ || "/.parachute/config").replace(/\/\.parachute\/config$/, "");
-    var url = base + "/admin/backend-availability";
+    var url = base + "/admin/backend-availability" + (probe ? "?probe=1" : "");
     try {
       var res = await fetch(url);
       if (!res.ok) return; // advisory: leave status hidden on non-200
@@ -824,7 +830,9 @@ const PAGE_SCRIPT = String.raw`
         // presence + token) updates in place without a page reload.
         await fetch(base + "/admin/refresh-claude-token-status", { method: "POST" });
       } catch (_e) { /* fall through to re-probe */ }
-      await checkAvailability();
+      // Pass probe=true: run the authoritative live "claude -p" auth probe,
+      // not just the (macOS-unreliable) file-token read.
+      await checkAvailability(true);
       // checkAvailability re-renders + re-wires; if it failed, restore the
       // button so the operator can retry.
       var stillThere = el("claude-refresh-btn");

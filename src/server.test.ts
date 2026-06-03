@@ -3,6 +3,7 @@ import { createFetchHandler, type ServerDeps } from "./server.ts";
 import type { ResolvedConfig } from "./config-schema.ts";
 import type { Cleaner } from "./providers.ts";
 import type { ScribeConfig } from "./config.ts";
+import { TranscribeBackendError } from "./transcribe/backend-error.ts";
 
 const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
@@ -166,7 +167,7 @@ describe("createFetchHandler — cleanup failure behavior", () => {
     console.error = originalError;
   });
 
-  test("cleanup throw → 200 with raw transcription, not 500", async () => {
+  test("cleanup throw → 200 with raw transcription + cleanup.applied:false + unmissable warning", async () => {
     const throwingCleanup: Cleaner = async () => {
       throw new Error("upstream LLM unreachable");
     };
@@ -178,8 +179,23 @@ describe("createFetchHandler — cleanup failure behavior", () => {
 
     const res = await handler(transcribeReq());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ text: "raw transcribed words" });
-    expect(errors.some((e) => e.includes("Cleanup failed") && e.includes("upstream LLM unreachable"))).toBe(true);
+    // Raw transcript is still returned (semantics unchanged) — but the
+    // additive `cleanup` field makes the skip legible to the caller.
+    expect(await res.json()).toEqual({
+      text: "raw transcribed words",
+      cleanup: { applied: false, provider: "anthropic", error: "upstream LLM unreachable" },
+    });
+    // The log is now an unmissable WARNING naming the provider + that the
+    // returned transcript is RAW (not the silent single-line console.error).
+    expect(
+      errors.some(
+        (e) =>
+          e.includes("WARNING: cleanup skipped") &&
+          e.includes("provider=anthropic") &&
+          e.includes("upstream LLM unreachable") &&
+          e.includes("RAW transcript returned"),
+      ),
+    ).toBe(true);
   });
 
   test("transcription throw → still 500 (cleanup fallback only covers cleanup)", async () => {
@@ -193,7 +209,27 @@ describe("createFetchHandler — cleanup failure behavior", () => {
     expect(res.status).toBe(500);
   });
 
-  test("cleanup success → 200 with cleaned text", async () => {
+  test("typed TranscribeBackendError (ffmpeg) → structured 503 backend_unavailable, not generic 500", async () => {
+    const handler = buildHandler({
+      transcribe: async () => {
+        throw new TranscribeBackendError(
+          "ffmpeg_unavailable",
+          "The transcription backend needs ffmpeg...",
+        );
+      },
+      resolvedConfig: CLEANUP_RESOLVED,
+    });
+    const res = await handler(transcribeReq());
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; error_code: string; message: string };
+    // Mirrors the missing_provider shape vault's worker JSON-parses:
+    // {error, error_code, message}. error_code is the stable branch key.
+    expect(body.error_code).toBe("backend_unavailable");
+    expect(body.message).toContain("ffmpeg");
+    expect(body.error).toContain("ffmpeg");
+  });
+
+  test("cleanup success → 200 with cleaned text + cleanup.applied:true", async () => {
     const handler = buildHandler({
       transcribe: async () => "raw",
       cleanup: async (text) => `cleaned(${text})`,
@@ -201,7 +237,10 @@ describe("createFetchHandler — cleanup failure behavior", () => {
     });
     const res = await handler(transcribeReq());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ text: "cleaned(raw)" });
+    expect(await res.json()).toEqual({
+      text: "cleaned(raw)",
+      cleanup: { applied: true, provider: "anthropic" },
+    });
   });
 
   test("threads cleanup.system_prompt + context_template from config into cleaner opts", async () => {
