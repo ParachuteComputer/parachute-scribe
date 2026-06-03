@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchHandler, type ServerDeps } from "./server.ts";
 import type { ResolvedConfig } from "./config-schema.ts";
+import type { ClaudeProbeFn } from "./backend-availability.ts";
 
 const RESOLVED: ResolvedConfig = {
   transcribeProvider: "parakeet-mlx",
@@ -442,5 +443,55 @@ describe("GET /admin/backend-availability", () => {
       }),
     );
     expect(res.status).toBe(404);
+  });
+
+  test("no ?probe → live claude probe seam NOT invoked (fast default path)", async () => {
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    let probeCalls = 0;
+    const probe: ClaudeProbeFn = async () => {
+      probeCalls++;
+      return { outcome: "ok" };
+    };
+    const handler = buildHandler("/tmp/unused", {
+      setupTokenStatusFn: () => "configured",
+      claudeProbeFn: probe,
+    });
+    const res = await handler(
+      new Request("http://localhost/admin/backend-availability"),
+    );
+    expect(res.status).toBe(200);
+    expect(probeCalls).toBe(0);
+  });
+
+  test("?probe=1 → endpoint stays 200 and never spawns a real claude (seam is honored)", async () => {
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    let probeCalls = 0;
+    // A "fail/Not logged in" stub: if the route reaches the probe branch (i.e.
+    // claude is on the host PATH), the verdict is `unauthenticated`. If claude
+    // is absent, the binary-absent branch returns `unavailable` and the seam is
+    // never consulted. Either way NO real `claude` is spawned — the seam stands
+    // in. The per-verdict mapping is exhaustively covered by the unit tests in
+    // backend-availability.test.ts; here we only assert the route wiring +
+    // safety (no subprocess, never throws, advisory 200).
+    const probe: ClaudeProbeFn = async () => {
+      probeCalls++;
+      return { outcome: "fail", output: "Not logged in" };
+    };
+    const handler = buildHandler("/tmp/unused", {
+      setupTokenStatusFn: () => "configured",
+      claudeProbeFn: probe,
+    });
+    const res = await handler(
+      new Request("http://localhost/admin/backend-availability?probe=1"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      cleanup: Record<string, { status: string }>;
+    };
+    const status = body.cleanup["claude-code"]?.status ?? "";
+    expect(["unauthenticated", "unavailable"]).toContain(status);
+    // When the probe branch was reached it was the injected seam, not a real
+    // subprocess. When it wasn't (claude absent), probeCalls stays 0.
+    expect(probeCalls).toBeLessThanOrEqual(1);
   });
 });

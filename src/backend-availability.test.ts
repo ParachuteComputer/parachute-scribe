@@ -10,6 +10,7 @@ import {
   computeBackendAvailability,
   type WhichFn,
   type ReachFn,
+  type ClaudeProbeFn,
 } from "./backend-availability.ts";
 import type { ScribeConfig } from "./config.ts";
 import type { SetupTokenStatus } from "./config-schema.ts";
@@ -98,6 +99,59 @@ describe("computeBackendAvailability — transcription binaries", () => {
     const v = report.transcribe["parakeet-mlx"]!;
     expect(v.status).toBe("unavailable");
     expect(v.fix).toContain("parakeet-mlx");
+  });
+
+  test("parakeet-mlx present but ffmpeg missing → warning naming ffmpeg (needsFfmpeg flag, was unchecked before)", async () => {
+    const report = await computeBackendAvailability({
+      which: whichWith(["parakeet-mlx"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+    });
+    const v = report.transcribe["parakeet-mlx"]!;
+    expect(v.status).toBe("warning");
+    expect(v.detail).toContain("ffmpeg");
+    expect(v.fix).toContain("ffmpeg");
+  });
+
+  test("parakeet-mlx + ffmpeg both present → available", async () => {
+    const report = await computeBackendAvailability({
+      which: whichWith(["parakeet-mlx", "ffmpeg"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+    });
+    expect(report.transcribe["parakeet-mlx"]!.status).toBe("available");
+  });
+
+  test("whisper (whisper-ctranslate2) present but ffmpeg missing → warning naming ffmpeg", async () => {
+    const report = await computeBackendAvailability({
+      which: whichWith(["whisper-ctranslate2"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+    });
+    const v = report.transcribe["whisper"]!;
+    expect(v.status).toBe("warning");
+    expect(v.detail).toContain("ffmpeg");
+    expect(v.fix).toContain("ffmpeg");
+  });
+
+  test("whisper binary missing → unavailable names BOTH whisper-ctranslate2 and ffmpeg", async () => {
+    const report = await computeBackendAvailability({
+      which: whichWith([]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+    });
+    const v = report.transcribe["whisper"]!;
+    expect(v.status).toBe("unavailable");
+    expect(v.fix).toContain("whisper-ctranslate2");
+    expect(v.fix).toContain("ffmpeg");
   });
 
   test("which throwing degrades to unknown, never crashes", async () => {
@@ -318,5 +372,161 @@ describe("computeBackendAvailability — ollama + custom + none", () => {
       setupTokenStatusFn: tokenStatus("not-configured"),
     });
     expect(report.cleanup["none"]!.status).toBe("ok-no-check");
+  });
+});
+
+describe("computeBackendAvailability — claude-code live auth probe", () => {
+  test("probe NOT invoked unless probeClaude is set (default per-call path stays subprocess-free)", async () => {
+    let probeCalls = 0;
+    const probe: ClaudeProbeFn = async () => {
+      probeCalls++;
+      return { outcome: "ok" };
+    };
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      claudeProbeFn: probe,
+      // probeClaude omitted → defaults false
+    });
+    expect(probeCalls).toBe(0);
+    // Falls back to the file-token heuristic.
+    expect(report.cleanup["claude-code"]!.status).toBe("available");
+  });
+
+  test("probe ok → available (live probe authoritative even when token file says not-configured)", async () => {
+    const probe: ClaudeProbeFn = async () => ({ outcome: "ok" });
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      // The macOS-unreliable file read says not-configured…
+      setupTokenStatusFn: tokenStatus("not-configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    // …but the LIVE probe is authoritative → available.
+    expect(report.cleanup["claude-code"]!.status).toBe("available");
+  });
+
+  test("probe fail + not-logged-in signature → unauthenticated with launchd-keychain fix", async () => {
+    const probe: ClaudeProbeFn = async () => ({
+      outcome: "fail",
+      output: "Error: Not logged in. Run `claude login`.",
+    });
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    const v = report.cleanup["claude-code"]!;
+    expect(v.status).toBe("unauthenticated");
+    expect(v.fix).toContain("claude setup-token");
+    expect(v.fix).toContain("ANTHROPIC_API_KEY");
+    expect(v.fix).toContain("keychain");
+  });
+
+  test("probe fail + invalid-api-key signature → unauthenticated", async () => {
+    const probe: ClaudeProbeFn = async () => ({
+      outcome: "fail",
+      output: "API Error: invalid API key provided",
+    });
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    expect(report.cleanup["claude-code"]!.status).toBe("unauthenticated");
+  });
+
+  test("probe enoent → unavailable (binary not runnable)", async () => {
+    const probe: ClaudeProbeFn = async () => ({ outcome: "enoent" });
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    expect(report.cleanup["claude-code"]!.status).toBe("unavailable");
+  });
+
+  test("probe fail without a recognized signature → warning (inconclusive), not a false unauthenticated", async () => {
+    const probe: ClaudeProbeFn = async () => ({
+      outcome: "fail",
+      output: "some unrelated runtime error",
+    });
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    expect(report.cleanup["claude-code"]!.status).toBe("warning");
+  });
+
+  test("probe error (e.g. timeout) → warning, never crashes the endpoint", async () => {
+    const probe: ClaudeProbeFn = async () => ({ outcome: "error" });
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    expect(report.cleanup["claude-code"]!.status).toBe("warning");
+  });
+
+  test("probe throwing degrades to warning, never crashes", async () => {
+    const probe: ClaudeProbeFn = async () => {
+      throw new Error("boom");
+    };
+    const report = await computeBackendAvailability({
+      which: whichWith(["claude"]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    expect(report.cleanup["claude-code"]!.status).toBe("warning");
+  });
+
+  test("claude binary absent → unavailable, probe never consulted", async () => {
+    let probeCalls = 0;
+    const probe: ClaudeProbeFn = async () => {
+      probeCalls++;
+      return { outcome: "ok" };
+    };
+    const report = await computeBackendAvailability({
+      which: whichWith([]),
+      reach: reachableTrue,
+      env: NO_ENV,
+      scribeConfig: EMPTY_CONFIG,
+      setupTokenStatusFn: tokenStatus("not-configured"),
+      probeClaude: true,
+      claudeProbeFn: probe,
+    });
+    expect(report.cleanup["claude-code"]!.status).toBe("unavailable");
+    expect(probeCalls).toBe(0);
   });
 });

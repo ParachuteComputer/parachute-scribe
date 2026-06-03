@@ -11,13 +11,17 @@
  * Status values:
  *
  *   - `configured`    — file exists + carries a token-shaped field.
- *   - `not-configured` — file doesn't exist OR carries no token-shaped field.
+ *   - `not-configured` — (non-macOS only) file doesn't exist OR carries no
+ *                       token-shaped field. On macOS this maps to `unknown`
+ *                       instead — see the macOS caveat on `readSetupTokenStatus`.
  *   - `expired`       — file carries a token field with an explicit expiry
  *                       in the past (Claude Code rotates these — see the
  *                       `expiresAt` field on `oauthAccount` blocks).
- *   - `unknown`       — file exists but unreadable / unparseable. Surfaced
- *                       so the SPA can show "couldn't determine" rather than
- *                       falsely claim "not configured."
+ *   - `unknown`       — file exists but unreadable / unparseable, OR (on
+ *                       macOS) the file carries no token — the credential may
+ *                       live in the login keychain, so the live probe is
+ *                       authoritative. Surfaced so the SPA shows "couldn't
+ *                       determine" rather than falsely claim "not configured."
  *
  * What we look for:
  *
@@ -137,18 +141,39 @@ function parseExpiry(raw: unknown): number | undefined {
  * Return the current setup-token status. Pure-read, no side effects, fast
  * (single file read + parse). The endpoint that calls this is rate-limited
  * by the SPA's Refresh button, not by us.
+ *
+ * **macOS caveat (the "Not logged in" mechanism).** On macOS, Claude Code's
+ * interactive-login credential lives in the *login keychain*, not in
+ * `~/.claude.json`. A launchd-spawned scribe can't unlock that keychain, so
+ * the file may legitimately carry no token even when `claude` is fully
+ * authenticated interactively. Treating file-absence as a definitive
+ * `not-configured` on macOS therefore produces false "not logged in"
+ * verdicts. We instead map file-absence to `unknown` (advisory) on macOS, and
+ * defer to the live `claude -p` probe (run via the admin Refresh button) as
+ * the authoritative signal. Non-macOS keeps the crisp `not-configured`.
+ *
+ * `platform` is injectable so tests can exercise both branches without
+ * depending on the host OS.
  */
 export function readSetupTokenStatus(
   env: Record<string, string | undefined> = process.env,
   now: number = Date.now(),
+  platform: NodeJS.Platform = process.platform,
 ): SetupTokenStatus {
   const path = resolveClaudeConfigPath(env);
   const result = safeReadJson(path);
-  if (result === "missing") return "not-configured";
+  if (result === "missing") {
+    // On macOS the credential may be in the login keychain rather than the
+    // file — file-absence is NOT definitive. Stay advisory (`unknown`) and let
+    // the live probe decide. Elsewhere, file-absence does mean not-configured.
+    return platform === "darwin" ? "unknown" : "not-configured";
+  }
   if (result === "unreadable") return "unknown";
 
   const token = findToken(result);
-  if (!token.found) return "not-configured";
+  if (!token.found) {
+    return platform === "darwin" ? "unknown" : "not-configured";
+  }
   if (token.expiresAt !== undefined && token.expiresAt < now) return "expired";
   return "configured";
 }

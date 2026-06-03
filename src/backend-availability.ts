@@ -55,8 +55,18 @@ export type BackendAvailability = {
    *   - `unknown`     — the check itself errored / couldn't determine. Never
    *                     a hard fail; the SPA shows "couldn't determine".
    *   - `ok-no-check` — nothing to check (e.g. cleanup `none`).
+   *   - `unauthenticated` — the dependency is installed but a live probe
+   *                     proved it isn't authenticated (claude-code only, and
+   *                     only when an explicit `?probe=1` ran the `claude -p`
+   *                     auth probe). `fix` carries the remedy.
    */
-  status: "available" | "unavailable" | "warning" | "unknown" | "ok-no-check";
+  status:
+    | "available"
+    | "unavailable"
+    | "warning"
+    | "unknown"
+    | "ok-no-check"
+    | "unauthenticated";
   /** One-line human summary, safe to render directly. */
   detail: string;
   /** Exact fix when status is unavailable/warning — install cmd, env export, etc. */
@@ -85,12 +95,48 @@ export type WhichFn = (bin: string) => string | null;
  */
 export type ReachFn = (url: string) => Promise<boolean>;
 
+/**
+ * Result of the live `claude -p` auth probe. The runner seam returns this
+ * shape; the default implementation maps a real subprocess onto it.
+ *
+ *   - `outcome: "ok"`     — `claude -p` exited 0. Authenticated.
+ *   - `outcome: "fail"`   — exited non-zero. `output` is the combined
+ *                           stdout+stderr we pattern-match against the
+ *                           not-authenticated signatures.
+ *   - `outcome: "enoent"` — the binary couldn't be spawned (not installed).
+ *   - `outcome: "error"`  — spawn/timeout/other error — degrade to `unknown`.
+ */
+export type ClaudeProbeResult =
+  | { outcome: "ok" }
+  | { outcome: "fail"; output: string }
+  | { outcome: "enoent" }
+  | { outcome: "error" };
+
+/**
+ * Seam for the live `claude -p` auth probe. Defaults to spawning the real
+ * CLI with a trivial prompt under a ~4s timeout; tests inject a stub so they
+ * never spawn `claude`. Only invoked when `probeClaude` is set — never on the
+ * default per-call availability path.
+ */
+export type ClaudeProbeFn = () => Promise<ClaudeProbeResult>;
+
 export type AvailabilityDeps = {
   which?: WhichFn;
   reach?: ReachFn;
   env?: Record<string, string | undefined>;
   scribeConfig: ScribeConfig;
   setupTokenStatusFn?: (env?: Record<string, string | undefined>) => SetupTokenStatus;
+  /**
+   * When true, run the live `claude -p` auth probe for the claude-code
+   * cleanup backend (the file-based token read is unreliable on macOS under
+   * launchd — the credential lives in the login keychain the daemon can't
+   * unlock). Gated behind an explicit request (the admin SPA's Refresh button
+   * sends `?probe=1`) so we never spawn a subprocess on every availability
+   * call. Defaults off.
+   */
+  probeClaude?: boolean;
+  /** Seam for the live claude probe. Defaults to the real subprocess runner. */
+  claudeProbeFn?: ClaudeProbeFn;
 };
 
 const defaultWhich: WhichFn = (bin) => Bun.which(bin);
@@ -115,22 +161,87 @@ const defaultReach: ReachFn = async (url) => {
   }
 };
 
-/** Install command per local transcription CLI. Sourced from README + .env.example. */
-const TRANSCRIBE_INSTALL: Record<string, { bin: string; fix: string }> = {
+/**
+ * Default live `claude -p` auth probe. Spawns the real CLI with a trivial
+ * prompt under a ~4s timeout, capturing combined stdout+stderr. Maps the
+ * subprocess outcome onto `ClaudeProbeResult`:
+ *
+ *   - clean exit 0           → `ok`
+ *   - non-zero exit          → `fail` with combined output
+ *   - spawn ENOENT           → `enoent` (binary not present)
+ *   - timeout / other error  → `error` (caller degrades to `unknown`)
+ *
+ * Never throws — every failure mode maps to a result so the endpoint can't
+ * be broken by a hung or missing probe.
+ */
+const CLAUDE_PROBE_TIMEOUT_MS = 4000;
+
+const defaultClaudeProbe: ClaudeProbeFn = async () => {
+  try {
+    // Bound the spawn with an AbortSignal so a hung `claude` is killed at the
+    // timeout — a never-returning probe can't pin the request open.
+    const proc = Bun.spawn(["claude", "-p", "Reply with the single word: ok"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      signal: AbortSignal.timeout(CLAUDE_PROBE_TIMEOUT_MS),
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode === 0) return { outcome: "ok" };
+    return { outcome: "fail", output: stdout + "\n" + stderr };
+  } catch (err) {
+    // Bun.spawn throws synchronously-as-rejection when the binary can't be
+    // found (ENOENT). A timeout surfaces as an AbortError. Distinguish
+    // ENOENT → "enoent" (missing); everything else → "error" → caller
+    // degrades to `unknown`.
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === "ENOENT" || (typeof code === "string" && code.includes("ENOENT"))) {
+      return { outcome: "enoent" };
+    }
+    return { outcome: "error" };
+  }
+};
+
+/** Signatures that mark `claude -p` as installed-but-not-authenticated. */
+const CLAUDE_UNAUTH_SIGNATURE = /not logged in|invalid api key|unauthorized|authentication/i;
+
+/**
+ * Install command per local transcription CLI. Sourced from README +
+ * .env.example.
+ *
+ * `needsFfmpeg` marks backends that shell to `ffmpeg` internally to decode
+ * non-WAV audio. ffmpeg is a *silent* prerequisite: when it's missing these
+ * tools can print an error yet exit 0 with no output, so the failure only
+ * surfaces opaquely at request time. Probing for it here lets the admin UI
+ * warn the operator at config time, naming ffmpeg with an install fix. All
+ * three local backends need it — previously only onnx-asr was checked (a
+ * hardcoded `name === "onnx-asr"` gate), which is why parakeet-mlx/whisper
+ * operators hit the silent ffmpeg failure with no warning.
+ */
+const TRANSCRIBE_INSTALL: Record<
+  string,
+  { bin: string; fix: string; needsFfmpeg?: boolean }
+> = {
   // parakeet-mlx: macOS / Apple-Silicon only (MLX). Published as a uv/pip tool.
   "parakeet-mlx": {
     bin: "parakeet-mlx",
     fix: "Install the parakeet-mlx CLI (macOS / Apple Silicon only): `uv tool install parakeet-mlx` (or `pip install parakeet-mlx`), then ensure it's on PATH.",
+    needsFfmpeg: true,
   },
   "onnx-asr": {
     bin: "onnx-asr",
     fix: "Install the onnx-asr CLI: `pip install onnx-asr[cpu,hub]` (cross-platform), then ensure it's on PATH.",
+    needsFfmpeg: true,
   },
   // The `whisper` backend shells to the `whisper-ctranslate2` binary, NOT a
   // bare `whisper` — the install command + the PATH check both target it.
   whisper: {
     bin: "whisper-ctranslate2",
     fix: "Install whisper-ctranslate2: `pip install whisper-ctranslate2`, then ensure it's on PATH.",
+    needsFfmpeg: true,
   },
 };
 
@@ -155,7 +266,7 @@ function safeWhich(which: WhichFn, bin: string): string | null | "error" {
   }
 }
 
-/** ffmpeg is a shared prerequisite for onnx-asr (it converts non-wav input). */
+/** ffmpeg is a shared prerequisite for the local CLI transcribers that decode non-WAV input. */
 function ffmpegNote(which: WhichFn): string {
   const ff = safeWhich(which, "ffmpeg");
   if (ff === null) {
@@ -177,14 +288,14 @@ function checkTranscribeBinary(
     return { status: "unknown", detail: `Couldn't check whether \`${spec.bin}\` is installed.` };
   }
   if (found === null) {
-    const extra = name === "onnx-asr" ? ffmpegNote(which) : "";
+    const extra = spec.needsFfmpeg ? ffmpegNote(which) : "";
     return {
       status: "unavailable",
       detail: `\`${spec.bin}\` isn't installed.`,
       fix: spec.fix + extra,
     };
   }
-  const extra = name === "onnx-asr" ? ffmpegNote(which) : "";
+  const extra = spec.needsFfmpeg ? ffmpegNote(which) : "";
   if (extra) {
     return {
       status: "warning",
@@ -243,11 +354,24 @@ async function checkOllama(
   };
 }
 
-function checkClaudeCode(
+/**
+ * Fix text for the launchd-keychain mechanism — the live "Not logged in"
+ * cause on macOS. A launchd-spawned scribe can't unlock the login keychain
+ * where Claude Code's interactive-login credential lives, so even an
+ * interactively-authenticated `claude` reads as unauthenticated under the
+ * daemon. The file-based token (`claude setup-token`) and `ANTHROPIC_API_KEY`
+ * both sidestep the keychain.
+ */
+const CLAUDE_LAUNCHD_FIX =
+  "`claude` is installed but not authenticated in the environment scribe runs under. Under launchd the login keychain is unavailable — run `claude setup-token` (file-based token) or set ANTHROPIC_API_KEY, then Refresh.";
+
+async function checkClaudeCode(
   which: WhichFn,
   env: Record<string, string | undefined>,
   setupTokenStatusFn: (env?: Record<string, string | undefined>) => SetupTokenStatus,
-): BackendAvailability {
+  probeClaude: boolean,
+  claudeProbeFn: ClaudeProbeFn,
+): Promise<BackendAvailability> {
   let tokenStatus: SetupTokenStatus;
   try {
     tokenStatus = setupTokenStatusFn(env);
@@ -270,7 +394,56 @@ function checkClaudeCode(
       setupTokenStatus: tokenStatus,
     };
   }
-  // CLI present — the deciding factor is now the setup-token.
+
+  // CLI present. When an explicit probe was requested, the LIVE `claude -p`
+  // result is AUTHORITATIVE — the file-token read is unreliable on macOS
+  // under launchd (the credential lives in the login keychain the daemon
+  // can't unlock; that's the live "Not logged in" mechanism). Without a
+  // probe, fall back to the file-token heuristic below.
+  if (probeClaude) {
+    let probe: ClaudeProbeResult;
+    try {
+      probe = await claudeProbeFn();
+    } catch {
+      probe = { outcome: "error" };
+    }
+    if (probe.outcome === "ok") {
+      return {
+        status: "available",
+        detail: "`claude` CLI installed and authenticated (live probe succeeded).",
+        setupTokenStatus: tokenStatus,
+      };
+    }
+    if (probe.outcome === "enoent") {
+      // The which() said present but the spawn couldn't find it — treat as
+      // not installed (PATH skew between Bun.which and the spawn env).
+      return {
+        status: "unavailable",
+        detail: "The `claude` CLI isn't runnable (spawn failed: not found).",
+        fix: "Install Claude Code (https://claude.com/claude-code), then run `claude setup-token` on this host and click Refresh.",
+        setupTokenStatus: tokenStatus,
+      };
+    }
+    if (probe.outcome === "fail" && CLAUDE_UNAUTH_SIGNATURE.test(probe.output)) {
+      return {
+        status: "unauthenticated",
+        detail: "`claude` CLI installed, but the live probe reports it isn't authenticated.",
+        fix: CLAUDE_LAUNCHD_FIX,
+        setupTokenStatus: tokenStatus,
+      };
+    }
+    // Non-zero exit without a recognized auth signature, or a probe error /
+    // timeout — can't conclude. Degrade to a non-fatal warning rather than a
+    // false "unauthenticated."
+    return {
+      status: "warning",
+      detail: "`claude` CLI installed; the live auth probe was inconclusive.",
+      fix: "If transcription cleanup fails, run `claude setup-token` on this host or set ANTHROPIC_API_KEY, then Refresh.",
+      setupTokenStatus: tokenStatus,
+    };
+  }
+
+  // No live probe — the deciding factor is the setup-token file (advisory).
   if (tokenStatus === "configured") {
     return {
       status: "available",
@@ -294,10 +467,11 @@ function checkClaudeCode(
       setupTokenStatus: tokenStatus,
     };
   }
-  // unknown token status (file present but unreadable)
+  // unknown token status (file present but unreadable, OR — on macOS — the
+  // credential may live in the login keychain rather than the file).
   return {
     status: "warning",
-    detail: "`claude` CLI installed; couldn't determine the setup-token status.",
+    detail: "`claude` CLI installed; couldn't determine the setup-token status from the file (on macOS the credential may be in the login keychain — click Refresh to run a live auth probe).",
     fix: "If transcription cleanup fails, run `claude setup-token` on this host and click Refresh.",
     setupTokenStatus: tokenStatus,
   };
@@ -350,6 +524,8 @@ export async function computeBackendAvailability(
   const env = deps.env ?? process.env;
   const setupTokenStatusFn = deps.setupTokenStatusFn ?? readSetupTokenStatus;
   const scribeConfig = deps.scribeConfig;
+  const probeClaude = deps.probeClaude ?? false;
+  const claudeProbeFn = deps.claudeProbeFn ?? defaultClaudeProbe;
 
   const transcribe: Record<string, BackendAvailability> = {};
   // Local CLI transcribers.
@@ -385,7 +561,13 @@ export async function computeBackendAvailability(
   }
   // claude-code.
   try {
-    cleanup["claude-code"] = checkClaudeCode(which, env, setupTokenStatusFn);
+    cleanup["claude-code"] = await checkClaudeCode(
+      which,
+      env,
+      setupTokenStatusFn,
+      probeClaude,
+      claudeProbeFn,
+    );
   } catch {
     cleanup["claude-code"] = { status: "unknown", detail: "Check failed." };
   }

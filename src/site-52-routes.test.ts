@@ -384,7 +384,13 @@ describe("POST /v1/audio/transcriptions — graceful missing-provider 400", () =
     });
     const res = await handler(audioReq());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ text: "transcribed" });
+    // BASE_RESOLVED enables cleanup (anthropic, default true) and the stub
+    // cleaner passes the text through — so the response carries the additive
+    // `cleanup.applied:true` field alongside the (unchanged) text.
+    expect(await res.json()).toEqual({
+      text: "transcribed",
+      cleanup: { applied: true, provider: "anthropic" },
+    });
   });
 });
 
