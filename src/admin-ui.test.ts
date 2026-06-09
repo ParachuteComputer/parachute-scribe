@@ -196,3 +196,55 @@ describe("config UX additions (scribe config-UX PR)", () => {
     expect(html).toContain("parachute restart scribe");
   });
 });
+
+describe("link to a vault (modular-UI R3)", () => {
+  test("renders the link-to-vault section with a vault picker + button", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain('id="link-vault-section"');
+    expect(html).toContain("Link to a vault");
+    expect(html).toContain('id="f-linkVault"');
+    expect(html).toContain('id="link-btn"');
+    expect(html).toContain('id="link-form"');
+  });
+
+  test("vault picker is populated from the hub's public well-known doc", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("/.well-known/parachute.json");
+    expect(html).toContain("loadVaults");
+    // Reads the `vaults` array off the discovery doc, same as channel.
+    expect(html).toContain("doc.vaults");
+  });
+
+  test("link mints a vault admin token from the hub's cookie-gated endpoint", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("/admin/vault-admin-token/");
+    expect(html).toContain("mintVaultAdminToken");
+    // The operator's hub session cookie is the approval.
+    expect(html).toContain('credentials: "include"');
+  });
+
+  test("link PATCHes the chosen vault's config to enable auto_transcribe", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("/api/vault");
+    expect(html).toContain('method: "PATCH"');
+    // The exact body shape the vault PATCH /api/vault contract expects.
+    expect(html).toContain("auto_transcribe");
+    expect(html).toContain('JSON.stringify({ config: { auto_transcribe: { enabled: true } } })');
+  });
+
+  test("link reads back + only claims success when the vault confirms the toggle", () => {
+    const html = renderAdminPage("");
+    // Honest model: an older vault PATCHes 200 but won't echo the toggle —
+    // the readback gate prevents a false success.
+    expect(html).toContain("confirmed");
+    expect(html).toContain("auto_transcribe");
+    // Success copy AND the older-vault fallback copy are both present.
+    expect(html).toContain("now auto-transcribes audio notes");
+    expect(html).toContain("Couldn't confirm the toggle");
+  });
+
+  test("link surfaces a clear not-signed-in notice on a 401 mint", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("Not signed in to the hub");
+  });
+});

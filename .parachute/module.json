@@ -16,9 +16,67 @@
     "defines": ["scribe:transcribe", "scribe:admin"]
   },
   "events": [
-    { "key": "transcription.complete", "title": "A transcription finished" }
+    {
+      "key": "transcription.complete",
+      "title": "A transcription finished",
+      "description": "Emitted in-band on the response to a transcription request: scribe returns the resulting text (plus a cleanup outcome when an LLM cleanup pass ran). Scribe is stateless — it does not fan this out to a vault or any subscriber; the caller (e.g. a vault's transcription worker) owns persisting the result. There is no hub-mediated webhook for this event today."
+    }
   ],
   "actions": [
-    { "key": "transcribe", "title": "Transcribe audio", "inputSchema": {} }
+    {
+      "key": "transcribe",
+      "title": "Transcribe audio",
+      "description": "Turn an audio file into text (Whisper-compatible), optionally running an LLM cleanup pass. This is a SYNCHRONOUS request-sink, not a webhook: the caller POSTs the audio bytes as multipart/form-data to /scribe/v1/audio/transcriptions (or a public URL to /scribe/v1/audio/transcriptions-url) and reads {text} off the response. It is deliberately NOT a hub `vault-trigger` connection — scribe does not accept a per-note webhook payload and never reads from or writes to a vault. The vault↔scribe handoff is driven vault-side: a vault's in-process transcription worker reads the audio attachment and calls this endpoint when the vault's `auto_transcribe` is enabled. Carries no `provision` block by design, so the hub Connections engine correctly declines to wire it as a webhook trigger.",
+      "scope": "scribe:transcribe",
+      "inputSchema": {
+        "type": "object",
+        "description": "multipart/form-data on /v1/audio/transcriptions (Whisper API shape), or JSON on /v1/audio/transcriptions-url.",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The audio file (wav/mp3/m4a/ogg) — multipart endpoint only."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "A public URL to fetch the audio from — JSON (-url) endpoint only."
+          },
+          "cleanup": {
+            "description": "Override the configured cleanup default for this request ('true'/'false'/'1'/'0').",
+            "type": ["boolean", "string"]
+          },
+          "context": {
+            "type": "object",
+            "description": "Optional per-request proper-nouns / glossary block the cleanup pass corrects against. Supplied by the caller, never stored by scribe."
+          }
+        }
+      }
+    }
+  ],
+  "connectionTemplates": [
+    {
+      "key": "link-to-vault",
+      "kind": "config",
+      "title": "Auto-transcribe a vault's audio",
+      "description": "Link scribe to a Parachute vault so audio notes recorded in that vault are transcribed automatically. The operator picks WHICH vault (the parameter); scribe's config UI enables auto-transcription in that vault with the operator's approval (the click is the approval). This is a CONFIG link, not a hub `vault-trigger` connection: the vault's own transcription worker calls scribe directly over loopback (discovered via services.json) when its `auto_transcribe` toggle is on — there is no per-note webhook and scribe holds no vault credentials. Enabling the link mints a short-lived `vault:<vault>:admin` token from the hub (cookie-gated to the logged-in operator) and flips the chosen vault's `auto_transcribe.enabled`.",
+      "requestedBy": "scribe",
+      "provider": {
+        "module": "scribe",
+        "action": "transcribe"
+      },
+      "target": {
+        "module": "vault",
+        "setting": "auto_transcribe.enabled"
+      },
+      "parameters": [
+        {
+          "key": "vault",
+          "target": "target.vault",
+          "title": "Vault",
+          "description": "Which vault's audio notes scribe should transcribe — the operator chooses from the hub's installed vaults."
+        }
+      ]
+    }
   ]
 }
