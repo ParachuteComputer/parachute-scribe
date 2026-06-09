@@ -8,8 +8,17 @@
   "health": "/health",
   "stripPrefix": true,
   "uiUrl": "/scribe/admin",
+  "configUiUrl": "/scribe/admin",
+  "focus": "core",
+  "adminCapabilities": ["config", "credentials"],
   "startCmd": ["parachute-scribe", "serve"],
   "scopes": {
     "defines": ["scribe:transcribe", "scribe:admin"]
-  }
+  },
+  "events": [
+    { "key": "transcription.complete", "title": "A transcription finished" }
+  ],
+  "actions": [
+    { "key": "transcribe", "title": "Transcribe audio", "inputSchema": {} }
+  ]
 }
