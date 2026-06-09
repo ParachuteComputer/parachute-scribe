@@ -20,6 +20,28 @@
  *     to invent its own session system — it's stateless by design.
  *   - In open mode (`SCRIBE_AUTH_TOKEN` unset, loopback-trusted), the page
  *     just works without a Bearer because the auth gate is bypassed.
+ *
+ * Link to a vault (modular-UI R3, the consistent-with-channel flow):
+ *   Scribe is STATELESS — it never reads from or writes to a vault. The
+ *   vault↔scribe relationship is driven entirely vault-side: a vault's
+ *   in-process transcription worker reads an audio attachment and POSTs it to
+ *   scribe's `/v1/audio/transcriptions` (discovered via services.json) WHEN the
+ *   vault's `auto_transcribe.enabled` toggle is on. So "link scribe to a vault"
+ *   is NOT a hub `vault-trigger` connection (scribe accepts no per-note webhook
+ *   and holds no vault credentials) — it is a CONFIG link: enable auto-transcribe
+ *   in the chosen vault. The page mirrors channel's UX (pick a vault from the
+ *   hub's public well-known doc, the click is the approval) but provisions a
+ *   vault config edit instead of a hub connection:
+ *     1. Populate the vault dropdown from `<origin>/.well-known/parachute.json`
+ *        (same-origin under the hub proxy, public — no token).
+ *     2. On link: mint a short-lived `vault:<vault>:admin` from the hub's
+ *        cookie-gated `<origin>/admin/vault-admin-token/<vault>`
+ *        (`credentials:"include"` — the operator's hub session is the approval).
+ *     3. PATCH `<origin>/vault/<vault>/api/vault` with that Bearer to set
+ *        `config.auto_transcribe.enabled = true`, then READ IT BACK and only
+ *        report success when the vault confirms it — so an older vault that
+ *        doesn't yet accept the toggle surfaces an honest "enable it in the
+ *        vault's own settings" notice instead of a false success.
  */
 
 const PALETTE = {
@@ -162,6 +184,32 @@ export function renderAdminPage(mount = ""): string {
           <button type="button" class="btn btn-secondary" id="reload-btn">Reload from server</button>
         </div>
       </form>
+
+      <section class="section" id="link-vault-section">
+        <div class="section-head">
+          <h2 class="section-title">Link to a vault</h2>
+          <p class="section-desc">
+            Turn on auto-transcription for a Parachute vault: audio notes recorded there are
+            sent to scribe automatically and the transcript lands back on the note. Pick a vault and
+            link it &mdash; <strong>clicking the button is your approval</strong>. Scribe stays stateless;
+            this flips the chosen vault's <code>auto_transcribe</code> setting (the vault calls scribe over
+            loopback when an audio note appears).
+          </p>
+        </div>
+        <div id="link-banner" class="banner" hidden></div>
+        <form id="link-form" class="config-form" novalidate>
+          <label class="field">
+            <span class="field-label">Vault</span>
+            <select name="linkVault" id="f-linkVault">
+              <option value="" disabled selected>Loading vaults&hellip;</option>
+            </select>
+            <span class="field-hint" id="hint-linkVault">Which vault's audio notes scribe should transcribe.</span>
+          </label>
+          <div class="button-row">
+            <button type="submit" class="btn btn-primary" id="link-btn" disabled>Link to vault</button>
+          </div>
+        </form>
+      </section>
 
       <footer class="card-footer">
         <p class="footer-hint">
@@ -974,9 +1022,217 @@ const PAGE_SCRIPT = String.raw`
     saveBtn.textContent = "Save configuration";
   }
 
+  // --- Link to a vault (modular-UI R3, the config-link flow) ---------------
+  //
+  // Scribe is stateless: it never reads or writes a vault. "Link to a vault"
+  // means "turn on auto-transcribe in that vault" -- the vault then calls
+  // scribe over loopback when an audio note appears. We mirror channel's UX
+  // (pick a vault from the hub's PUBLIC well-known doc; the click is the
+  // approval) but provision a vault CONFIG edit, not a hub connection.
+  //
+  // ORIGIN. Everything here is keyed off window.location.origin -- the page is
+  // same-origin under the hub proxy, so the hub's /.well-known, /admin/* mint,
+  // and /vault/* proxy all resolve at the page origin. A direct-to-daemon load
+  // (no hub) has no /admin mint endpoint; the flow surfaces a clear notice.
+
+  function setLinkBanner(kind, trustedHtml) {
+    var b = el("link-banner");
+    if (!b) return;
+    b.className = "banner banner-" + kind;
+    b.innerHTML = trustedHtml;
+    b.hidden = false;
+    b.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  function clearLinkBanner() {
+    var b = el("link-banner");
+    if (!b) return;
+    b.hidden = true;
+    b.innerHTML = "";
+    b.className = "banner";
+  }
+
+  // Populate the vault dropdown from the hub's PUBLIC discovery doc. Same-origin
+  // under the /scribe proxy, no token needed -- it's public.
+  function loadVaults() {
+    return fetch(window.location.origin + "/.well-known/parachute.json", {
+      headers: { accept: "application/json" },
+      credentials: "include",
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (doc) {
+        var sel = el("f-linkVault");
+        if (!sel) return;
+        var vaults = (doc && Array.isArray(doc.vaults)) ? doc.vaults : [];
+        sel.innerHTML = "";
+        if (!vaults.length) {
+          var opt = document.createElement("option");
+          opt.value = "";
+          opt.disabled = true;
+          opt.selected = true;
+          opt.textContent = "No vaults found";
+          sel.appendChild(opt);
+          el("link-btn").disabled = true;
+          el("hint-linkVault").textContent =
+            "No vaults are installed on this hub yet -- create one in the hub portal first.";
+          return;
+        }
+        vaults.forEach(function (v, i) {
+          var opt = document.createElement("option");
+          opt.value = v.name;
+          opt.textContent = v.name;
+          if (i === 0) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        el("link-btn").disabled = false;
+      })
+      .catch(function () {
+        var sel = el("f-linkVault");
+        if (!sel) return;
+        sel.innerHTML = "";
+        var opt = document.createElement("option");
+        opt.value = "";
+        opt.disabled = true;
+        opt.selected = true;
+        opt.textContent = "Could not load vaults";
+        sel.appendChild(opt);
+        el("link-btn").disabled = true;
+      });
+  }
+
+  // Mint a short-lived vault:<vault>:admin from the hub (cookie-gated to the
+  // logged-in operator). Returns the token string, or null on any failure --
+  // the caller renders the right notice from the HTTP status it observed.
+  function mintVaultAdminToken(vault) {
+    return fetch(
+      window.location.origin + "/admin/vault-admin-token/" + encodeURIComponent(vault),
+      { credentials: "include", headers: { accept: "application/json" } }
+    ).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (payload) {
+        return { status: r.status, token: payload && payload.token ? payload.token : null };
+      });
+    });
+  }
+
+  async function linkToVault(ev) {
+    ev.preventDefault();
+    clearLinkBanner();
+    var vault = el("f-linkVault").value;
+    if (!vault) { setLinkBanner("error", "<strong>Pick a vault.</strong>"); return; }
+    var btn = el("link-btn");
+    btn.disabled = true;
+    var prev = btn.textContent;
+    // ASCII "..." -- a literal ellipsis renders as a visible backslash-u escape
+    // in this String.raw page-script (Bun transpile + String.raw quirk).
+    btn.textContent = "Linking...";
+    try {
+      // 1. Mint the vault admin token from the hub (the operator's hub session
+      //    cookie is the approval). A 401/403 here means "not signed in to the
+      //    hub as admin" -- surface that, don't pretend it worked.
+      var mint = await mintVaultAdminToken(vault);
+      if (mint.status === 401) {
+        setLinkBanner(
+          "warn",
+          "<strong>Not signed in to the hub.</strong> Linking a vault uses your hub admin session. " +
+            "Open this page through the Parachute hub portal (signed in) at <code>/scribe/admin</code>, then try again."
+        );
+        return;
+      }
+      if (mint.status === 403) {
+        setLinkBanner(
+          "error",
+          "<strong>Not permitted.</strong> Only the hub admin can enable auto-transcribe on a vault."
+        );
+        return;
+      }
+      if (!mint.token) {
+        setLinkBanner(
+          "error",
+          "<strong>Could not get vault access.</strong> The hub did not mint a vault admin token (HTTP " +
+            escapeHtml(String(mint.status)) + "). Open this page through the hub portal and retry."
+        );
+        return;
+      }
+
+      // 2. PATCH the vault config to enable auto-transcribe, through the hub's
+      //    per-vault proxy. The body shape mirrors the vault's PATCH /api/vault
+      //    contract (config block); auto_transcribe.enabled is the master toggle
+      //    (vault#353).
+      var patchRes = await fetch(
+        window.location.origin + "/vault/" + encodeURIComponent(vault) + "/api/vault",
+        {
+          method: "PATCH",
+          headers: {
+            authorization: "Bearer " + mint.token,
+            "content-type": "application/json",
+            accept: "application/json",
+          },
+          body: JSON.stringify({ config: { auto_transcribe: { enabled: true } } }),
+        }
+      );
+      if (!patchRes.ok) {
+        var pErr = await patchRes.json().catch(function () { return {}; });
+        setLinkBanner(
+          "error",
+          "<strong>Link failed.</strong> " +
+            escapeHtml((pErr && (pErr.message || pErr.error)) || ("HTTP " + patchRes.status))
+        );
+        return;
+      }
+
+      // 3. READ IT BACK and only claim success when the vault confirms the
+      //    toggle. An older vault that doesn't yet accept auto_transcribe will
+      //    PATCH 200 but won't echo it enabled -- we must NOT report a false
+      //    success. We branch on whether the readback reports it on.
+      var confirmed = false;
+      try {
+        var getRes = await fetch(
+          window.location.origin + "/vault/" + encodeURIComponent(vault) + "/api/vault",
+          { headers: { authorization: "Bearer " + mint.token, accept: "application/json" } }
+        );
+        if (getRes.ok) {
+          var doc = await getRes.json();
+          var at = doc && doc.config && doc.config.auto_transcribe;
+          confirmed = !!(at && at.enabled === true);
+        }
+      } catch (_e) { /* readback failed -- fall through to the unconfirmed path */ }
+
+      if (confirmed) {
+        setLinkBanner(
+          "success",
+          "<strong>Linked.</strong> Vault <code>" + escapeHtml(vault) +
+            "</code> now auto-transcribes audio notes through scribe. " +
+            "Make sure scribe stays running and reachable (it self-registers in <code>services.json</code>)."
+        );
+      } else {
+        // PATCH was accepted but the readback didn't confirm the toggle is on --
+        // almost always an older vault build whose PATCH /api/vault doesn't yet
+        // handle auto_transcribe. Tell the operator exactly how to finish.
+        setLinkBanner(
+          "warn",
+          "<strong>Couldn't confirm the toggle.</strong> The hub accepted the request, but vault <code>" +
+            escapeHtml(vault) + "</code> didn't report auto-transcribe as enabled &mdash; it's likely on an older " +
+            "version. Enable it from the vault's own settings (set <code>auto_transcribe.enabled: true</code> in its " +
+            "<code>config.yaml</code>), then make sure scribe is running."
+        );
+      }
+    } catch (err) {
+      setLinkBanner("error", "<strong>Network error.</strong> " + escapeHtml(err && err.message ? err.message : String(err)));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     el("config-form").addEventListener("submit", saveConfig);
     el("reload-btn").addEventListener("click", loadConfig);
+    // Link-to-a-vault flow (R3). The vault dropdown loads in parallel with the
+    // config form (public well-known doc, no token).
+    var linkForm = el("link-form");
+    if (linkForm) {
+      linkForm.addEventListener("submit", linkToVault);
+      loadVaults();
+    }
     // When the operator picks a different backend, re-render the inline
     // availability status for the newly-selected one from the cached report
     // (no refetch needed -- the report covers every backend).
