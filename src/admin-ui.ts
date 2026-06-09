@@ -11,15 +11,21 @@
  * `restart_required` list returned by the server.
  *
  * Auth posture:
- *   - When loaded through hub's reverse proxy, the hub injects a Bearer with
- *     `scribe:admin` scope based on the operator's hub session — the form's
- *     fetch calls go through with that token and the operator never sees it.
- *   - When loaded directly (no hub in front), the page has no token to send.
- *     The schema/config fetch on load surfaces the 401 with a "no auth
- *     detected" banner pointing the operator at the hub. Scribe doesn't try
- *     to invent its own session system — it's stateless by design.
- *   - In open mode (`SCRIBE_AUTH_TOKEN` unset, loopback-trusted), the page
- *     just works without a Bearer because the auth gate is bypassed.
+ *   - When loaded through hub's reverse proxy, the page fetches a
+ *     `scribe:admin` Bearer from the hub on load (cookie-gated mint endpoint
+ *     at `/admin/module-token/scribe`, `credentials:"include"` — same-origin
+ *     under the proxy so the operator's hub session cookie flows). Every
+ *     data/mutation fetch attaches `Authorization: Bearer <token>`. On a 401,
+ *     the page re-fetches the token once and retries. This mirrors channel's
+ *     `src/admin-ui.ts` `fetchToken()` + `authHeaders()` pattern.
+ *   - When loaded directly (no hub in front / not signed in), the token fetch
+ *     fails; the page surfaces a "not signed in" banner pointing the operator
+ *     at the hub. Scribe doesn't try to invent its own session system — it is
+ *     stateless by design.
+ *   - In open mode (`SCRIBE_AUTH_TOKEN` unset, loopback-trusted), the token
+ *     fetch will fail (no hub), but the data calls succeed anyway because the
+ *     auth gate is bypassed — the page sends requests without a Bearer and
+ *     scribe accepts them in open mode.
  *
  * Link to a vault (modular-UI R3, the consistent-with-channel flow):
  *   Scribe is STATELESS — it never reads from or writes to a vault. The
@@ -664,6 +670,57 @@ const STYLES = `
 const PAGE_SCRIPT = String.raw`
   "use strict";
 
+  // --- Auth bootstrap: mint a scribe:admin Bearer from the hub ---------------
+  //
+  // The page loads open (no Bearer required to GET the HTML). On DOMContentLoaded
+  // we fetch a short-lived scribe:admin JWT from the hub's cookie-gated endpoint
+  // (same-origin under the hub proxy -- credentials:"include" lets the operator's
+  // hub session cookie flow). The token is stored in window.__scribeToken and
+  // attached to every subsequent data/mutation fetch via authHeaders().
+  //
+  // Open mode (SCRIBE_AUTH_TOKEN unset): the token fetch will fail (no hub endpoint),
+  // but the data calls succeed because the auth gate is bypassed server-side.
+  // That case is harmless: authHeaders() returns an empty object when the token
+  // is null, and scribe accepts no-token requests in open mode.
+  //
+  // Mirrors channel's fetchToken() + authHeaders() pattern exactly.
+  window.__scribeToken = null;
+
+  function fetchScribeToken() {
+    return fetch(window.location.origin + "/admin/module-token/scribe", {
+      credentials: "include",
+      headers: { accept: "application/json" },
+    })
+      .then(function (r) {
+        if (!r.ok) return null;
+        return r.json().catch(function () { return null; });
+      })
+      .then(function (j) {
+        window.__scribeToken = (j && j.token) ? j.token : null;
+        return window.__scribeToken;
+      })
+      .catch(function () {
+        window.__scribeToken = null;
+        return null;
+      });
+  }
+
+  function authHeaders(extra) {
+    var h = extra || {};
+    if (window.__scribeToken) h.authorization = "Bearer " + window.__scribeToken;
+    return h;
+  }
+
+  // Re-fetch the token once, then retry a single fetch call. Used when a data
+  // call returns 401 -- re-mints the token in case it expired, then retries.
+  // Returns the response from the retried call (or the original 401 if the
+  // token is still null after re-mint, so the caller can surface the error).
+  function retryWithFreshToken(fetchFn) {
+    return fetchScribeToken().then(function () {
+      return fetchFn();
+    });
+  }
+
   const FIELD_IDS = {
     transcribeProvider: "f-transcribeProvider",
     cleanupProvider: "f-cleanupProvider",
@@ -851,7 +908,14 @@ const PAGE_SCRIPT = String.raw`
     var base = (window.__SCRIBE_CONFIG_URL__ || "/.parachute/config").replace(/\/\.parachute\/config$/, "");
     var url = base + "/admin/backend-availability" + (probe ? "?probe=1" : "");
     try {
-      var res = await fetch(url);
+      var res = await fetch(url, { headers: authHeaders() });
+      // On 401, re-mint token once and retry. Advisory endpoint: any
+      // non-200 after retry leaves status hidden (no page error).
+      if (res.status === 401) {
+        res = await retryWithFreshToken(function () {
+          return fetch(url, { headers: authHeaders() });
+        });
+      }
       if (!res.ok) return; // advisory: leave status hidden on non-200
       AVAILABILITY = await res.json();
       refreshStatusDisplay();
@@ -876,7 +940,20 @@ const PAGE_SCRIPT = String.raw`
         // POST /admin/refresh-claude-token-status re-reads ~/.claude.json. We
         // then re-run the full availability probe so the inline status (CLI
         // presence + token) updates in place without a page reload.
-        await fetch(base + "/admin/refresh-claude-token-status", { method: "POST" });
+        var refreshRes = await fetch(base + "/admin/refresh-claude-token-status", {
+          method: "POST",
+          headers: authHeaders(),
+        });
+        // On 401: re-mint token then retry the POST (best-effort; the re-probe
+        // below is the meaningful work, so any outcome here is fine).
+        if (refreshRes.status === 401) {
+          await retryWithFreshToken(function () {
+            return fetch(base + "/admin/refresh-claude-token-status", {
+              method: "POST",
+              headers: authHeaders(),
+            });
+          });
+        }
       } catch (_e) { /* fall through to re-probe */ }
       // Pass probe=true: run the authoritative live "claude -p" auth probe,
       // not just the (macOS-unreliable) file-token read.
@@ -888,6 +965,15 @@ const PAGE_SCRIPT = String.raw`
     });
   }
 
+  // Perform the actual schema+config fetch pair (shared by loadConfig and the
+  // 401-retry path). Returns { schemaRes, configRes } or throws on network error.
+  function fetchConfigPair() {
+    return Promise.all([
+      fetch(window.__SCRIBE_SCHEMA_URL__ || "/.parachute/config/schema", { headers: authHeaders() }),
+      fetch(window.__SCRIBE_CONFIG_URL__ || "/.parachute/config", { headers: authHeaders() }),
+    ]).then(function (res) { return { schemaRes: res[0], configRes: res[1] }; });
+  }
+
   async function loadConfig() {
     clearBanner();
     clearFieldErrors();
@@ -896,16 +982,27 @@ const PAGE_SCRIPT = String.raw`
     el("button-row").hidden = true;
 
     try {
-      const [schemaRes, configRes] = await Promise.all([
-        fetch(window.__SCRIBE_SCHEMA_URL__ || "/.parachute/config/schema"),
-        fetch(window.__SCRIBE_CONFIG_URL__ || "/.parachute/config"),
-      ]);
+      var pair = await fetchConfigPair();
+      var schemaRes = pair.schemaRes;
+      var configRes = pair.configRes;
+
+      // 401: re-mint the token once and retry. This handles the case where the
+      // token expired between page load and the first data fetch, or the token
+      // fetch itself silently failed (open-mode, hub not running).
+      if (schemaRes.status === 401 || configRes.status === 401) {
+        await fetchScribeToken();
+        var retried = await fetchConfigPair();
+        schemaRes = retried.schemaRes;
+        configRes = retried.configRes;
+      }
+
+      // After retry, if still 401, surface a clear not-signed-in notice.
       if (schemaRes.status === 401 || configRes.status === 401) {
         setBanner(
           "warn",
-          "<strong>No auth detected.</strong> Scribe requires a bearer token with the <code>scribe:admin</code> scope, " +
-            "but this page has no way to mint one. Access the configuration through the Parachute hub (which proxies " +
-            "with the appropriate session), or set <code>SCRIBE_AUTH_TOKEN</code> empty for loopback-trusted mode."
+          "<strong>Not signed in to the hub.</strong> Scribe requires a <code>scribe:admin</code> token. " +
+            "Open this page through the Parachute hub portal (signed in) at <code>/scribe/admin</code>, " +
+            "or set <code>SCRIBE_AUTH_TOKEN</code> empty for loopback-trusted (open) mode."
         );
         el("form-loading").hidden = true;
         return;
@@ -942,13 +1039,21 @@ const PAGE_SCRIPT = String.raw`
     saveBtn.textContent = "Saving...";
 
     const body = collectForm();
+    const configBodyStr = JSON.stringify(body);
+    function doSaveFetch() {
+      return fetch(window.__SCRIBE_CONFIG_URL__ || "/.parachute/config", {
+        method: "PUT",
+        headers: authHeaders({ "content-type": "application/json" }),
+        body: configBodyStr,
+      });
+    }
     let res;
     try {
-      res = await fetch(window.__SCRIBE_CONFIG_URL__ || "/.parachute/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      res = await doSaveFetch();
+      // On 401: re-mint token once and retry the PUT.
+      if (res.status === 401) {
+        res = await retryWithFreshToken(doSaveFetch);
+      }
     } catch (err) {
       saveBtn.disabled = false;
       saveBtn.textContent = "Save configuration";
@@ -969,8 +1074,8 @@ const PAGE_SCRIPT = String.raw`
       );
     } else if (res.status === 401) {
       setBanner(
-        "error",
-        "<strong>Unauthorized.</strong> Reload this page through the Parachute hub so it proxies with your operator session."
+        "warn",
+        "<strong>Not signed in to the hub.</strong> Open this page through the Parachute hub portal at <code>/scribe/admin</code> (signed in), then try again."
       );
     } else if (res.status === 403) {
       setBanner(
@@ -1238,6 +1343,11 @@ const PAGE_SCRIPT = String.raw`
     // (no refetch needed -- the report covers every backend).
     el(FIELD_IDS.transcribeProvider).addEventListener("change", refreshStatusDisplay);
     el(FIELD_IDS.cleanupProvider).addEventListener("change", refreshStatusDisplay);
-    loadConfig();
+    // Fetch the hub token first so the config API calls go out authenticated.
+    // A token failure (open mode / hub not running) still proceeds to loadConfig
+    // -- which succeeds in open mode (auth gate bypassed) and surfaces the
+    // not-signed-in banner on a resulting 401 so the operator sees one clear
+    // notice. Mirrors channel's fetchToken().then(loadChannels) pattern.
+    fetchScribeToken().then(loadConfig);
   });
 `;

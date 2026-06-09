@@ -372,14 +372,20 @@ describe("GET /scribe/admin", () => {
     expect(html).toContain("trustedHtml");
   });
 
-  test("closed mode without bearer → 401", async () => {
+  test("closed mode WITHOUT bearer → 200 HTML (page loads open so JS can mint token)", async () => {
+    // This is the regression being fixed: previously the page-GET required auth
+    // and returned 401 before any JS ran, making the admin UI inaccessible from
+    // a browser that didn't already hold a Bearer. The page now loads open;
+    // the inline JS mints a scribe:admin token from the hub and attaches it to
+    // the actual data/mutation fetches.
     process.env.SCRIBE_AUTH_TOKEN = "s3cret";
     const handler = buildHandler("/tmp/unused");
     const res = await handler(new Request("http://localhost/scribe/admin"));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
   });
 
-  test("closed mode with shared-secret bearer → 200", async () => {
+  test("closed mode with shared-secret bearer → 200 HTML (still works)", async () => {
     process.env.SCRIBE_AUTH_TOKEN = "s3cret";
     const handler = buildHandler("/tmp/unused");
     const res = await handler(
@@ -388,6 +394,99 @@ describe("GET /scribe/admin", () => {
       }),
     );
     expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
+  });
+});
+
+describe("GET /admin — canonical admin SPA page route (open-page fix)", () => {
+  let originalToken: string | undefined;
+
+  beforeEach(() => {
+    originalToken = process.env.SCRIBE_AUTH_TOKEN;
+  });
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env.SCRIBE_AUTH_TOKEN;
+    else process.env.SCRIBE_AUTH_TOKEN = originalToken;
+  });
+
+  test("open mode → 200 HTML", async () => {
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(new Request("http://localhost/admin"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
+  });
+
+  test("closed mode WITHOUT bearer → 200 HTML (page loads open)", async () => {
+    // Core regression: browser GETs the page without a Bearer (it has no token
+    // yet). Must return 200 so the inline JS can run and mint one from the hub.
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(new Request("http://localhost/admin"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
+  });
+
+  test("closed mode with shared-secret bearer → 200 HTML (still works)", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/admin", {
+        headers: { Authorization: "Bearer s3cret" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
+  });
+
+  test("data endpoint /admin/backend-availability still 401 without bearer in closed mode", async () => {
+    // The open-page exemption is ONLY for the exact page-render paths.
+    // Sub-paths (/admin/backend-availability etc.) remain gated so a
+    // browser script or direct caller still needs a valid scribe:admin Bearer.
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/admin/backend-availability"),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("mutation POST /admin/refresh-claude-token-status still 401 without bearer", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/admin/refresh-claude-token-status", {
+        method: "POST",
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("/.parachute/config PUT still 401 without bearer in closed mode", async () => {
+    // Config writes must always require scribe:admin — the open-page fix
+    // does NOT relax any mutation endpoint.
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/.parachute/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcribeProvider: "whisper" }),
+      }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("page HTML contains the hub token-mint call to /admin/module-token/scribe", async () => {
+    // Verifies the inline JS actually bootstraps auth from the hub on load.
+    delete process.env.SCRIBE_AUTH_TOKEN;
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(new Request("http://localhost/admin"));
+    const html = await res.text();
+    expect(html).toContain("/admin/module-token/scribe");
+    expect(html).toContain("fetchScribeToken");
+    expect(html).toContain("authHeaders");
   });
 });
 

@@ -197,6 +197,44 @@ describe("config UX additions (scribe config-UX PR)", () => {
   });
 });
 
+describe("token bootstrap (open-page + hub-mint pattern)", () => {
+  test("page script declares fetchScribeToken that hits /admin/module-token/scribe", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("fetchScribeToken");
+    expect(html).toContain("/admin/module-token/scribe");
+    // credentials:"include" so the hub session cookie flows same-origin.
+    expect(html).toContain('credentials: "include"');
+  });
+
+  test("page script declares authHeaders() that attaches window.__scribeToken as Bearer", () => {
+    const html = renderAdminPage("");
+    expect(html).toContain("authHeaders");
+    expect(html).toContain("window.__scribeToken");
+    expect(html).toContain('"Bearer " + window.__scribeToken');
+  });
+
+  test("page script calls fetchScribeToken before loadConfig on DOMContentLoaded", () => {
+    const html = renderAdminPage("");
+    // Mirrors channel's fetchToken().then(loadChannels) boot order.
+    expect(html).toContain("fetchScribeToken().then(loadConfig)");
+  });
+
+  test("page script retries data fetches with a fresh token on 401", () => {
+    const html = renderAdminPage("");
+    // retryWithFreshToken is the shared retry helper.
+    expect(html).toContain("retryWithFreshToken");
+    expect(html).toContain("fetchScribeToken");
+  });
+
+  test("not-signed-in banner copy matches the new hub-portal framing", () => {
+    // The old copy pointed at SCRIBE_AUTH_TOKEN; the new copy points at
+    // the hub portal since that is now the auth path.
+    const html = renderAdminPage("");
+    expect(html).toContain("Not signed in to the hub");
+    expect(html).toContain("/scribe/admin");
+  });
+});
+
 describe("link to a vault (modular-UI R3)", () => {
   test("renders the link-to-vault section with a vault picker + button", () => {
     const html = renderAdminPage("");

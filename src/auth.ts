@@ -39,6 +39,18 @@ export type AuthResult =
 
 export const AUTH_EXEMPT_PATHS = new Set(["/health", "/.parachute/info"]);
 
+/**
+ * Paths whose GET responses are the admin SPA *page render* — no auth required
+ * so the browser can load the HTML (which then mints its own Bearer from the
+ * hub and attaches it to subsequent data/mutation fetches). Mirrors the pattern
+ * channel's admin page uses.
+ *
+ * ONLY the bare page-path is in this set. Sub-paths like `/admin/backend-availability`
+ * and `/admin/clear-credential/*` are NOT here — those remain `scribe:admin`-gated
+ * via `requiredScopeFor`.
+ */
+export const ADMIN_PAGE_PATHS = new Set(["/admin", "/scribe/admin"]);
+
 export function extractBearer(authHeader: string | null | undefined): string | undefined {
   if (!authHeader) return undefined;
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
@@ -197,12 +209,21 @@ export function hasScope(granted: readonly string[], required: string): boolean 
 /**
  * Resolve auth + return either a 401 response or the granted scope list.
  * Exempt paths (`/health`, `/.parachute/info`) skip auth entirely.
+ * Admin SPA page-render paths (`/admin`, `/scribe/admin`) also skip auth so
+ * the browser can load the HTML; the page's inline JS then mints its own
+ * Bearer from the hub and attaches it to every data/mutation call. This
+ * mirrors channel's admin page pattern. Full scopes are granted so the
+ * scope gate in `route()` passes — the page render itself is safe to serve
+ * open (it contains no secrets), and all actual data endpoints remain gated.
  */
 export async function enforceAuth(
   req: Request,
   pathname: string,
 ): Promise<Response | { scopes: readonly string[] }> {
   if (AUTH_EXEMPT_PATHS.has(pathname)) return { scopes: FULL_SCOPES };
+  // Admin SPA page: exempt for GET only — POST/PUT to these paths (there are
+  // none today but be explicit) still go through normal auth.
+  if (ADMIN_PAGE_PATHS.has(pathname) && req.method === "GET") return { scopes: FULL_SCOPES };
   const token = extractBearer(req.headers.get("authorization"));
   const result = await validateToken(token);
   if (result.valid) return { scopes: result.scopes };
