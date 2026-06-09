@@ -478,6 +478,28 @@ describe("GET /admin — canonical admin SPA page route (open-page fix)", () => 
     expect(res.status).toBe(401);
   });
 
+  test("method-confusion: POST /admin WITHOUT bearer → 401 (exemption is GET-only)", async () => {
+    // Auth-boundary guard: the open-page exemption is an exact-path GET match.
+    // A non-GET method to the same path must NOT inherit the exemption — it
+    // goes through normal auth and 401s without a Bearer. Pins the boundary so
+    // a future refactor can't silently widen the exemption to non-GET verbs.
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/admin", { method: "POST" }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("method-confusion: POST /scribe/admin WITHOUT bearer → 401 (legacy alias, GET-only)", async () => {
+    process.env.SCRIBE_AUTH_TOKEN = "s3cret";
+    const handler = buildHandler("/tmp/unused");
+    const res = await handler(
+      new Request("http://localhost/scribe/admin", { method: "POST" }),
+    );
+    expect(res.status).toBe(401);
+  });
+
   test("page HTML contains the hub token-mint call to /admin/module-token/scribe", async () => {
     // Verifies the inline JS actually bootstraps auth from the hub on load.
     delete process.env.SCRIBE_AUTH_TOKEN;
