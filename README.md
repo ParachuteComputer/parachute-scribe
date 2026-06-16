@@ -184,7 +184,7 @@ Optional LLM pass that fixes transcription artifacts — filler words, punctuati
 
 Local providers (`parakeet-mlx`, `onnx-asr`, `whisper`, `ollama`, `claude-code`) need no key. Cloud providers need one. Scribe reads a provider's key from three places, in precedence order — **config file > env var > built-in default**:
 
-1. **The admin SPA (hub installs).** Open `<hub-origin>/scribe/admin`, pick your provider, paste the key. Scribe writes it into `~/.parachute/scribe/config.json` under `transcribeProviders.<name>` / `cleanupProviders.<name>`, and the **next** transcription request picks it up — no restart. This is the path for hub-managed installs.
+1. **The admin SPA (hub installs).** Open `<hub-origin>/scribe/admin`, pick your provider, paste the key. Scribe writes it into `~/.parachute/scribe/config.json` under `transcribeProviders.<name>` / `cleanupProviders.<name>`. Updating a **key** for the provider you're already on takes effect on the next request. **Selecting or switching a provider needs a restart** (`parachute restart scribe`) — the admin SPA flags this too. This is the path for hub-managed installs.
 2. **An env var** — the right path for source / CLI runs. Put keys in `~/.parachute/scribe/.env` (or your shell environment):
 
    | Provider | Key env var | Used for |
