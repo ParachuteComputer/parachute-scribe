@@ -4,7 +4,29 @@ Audio transcription + LLM cleanup for [Parachute](https://parachute.computer). W
 
 Takes audio in, returns clean text out. The opposite direction of [`@openparachute/narrate`](https://github.com/ParachuteComputer/parachute-narrate).
 
+Conventions (naming, ports, scopes, governance) follow [`parachute-patterns`](https://github.com/ParachuteComputer/parachute-patterns) — the ecosystem-wide source of truth.
+
 ## Quick start
+
+Two ways in: install via the **hub** (the canonical Parachute path), or **clone** the repo to run from source.
+
+### Install via the hub (recommended)
+
+If you've got the Parachute [hub](https://github.com/ParachuteComputer/parachute-hub) running (the portal on `:1939`), one command installs scribe, assigns its canonical port (`1943`), registers it under the hub supervisor, and starts it:
+
+```bash
+parachute install scribe
+```
+
+In a terminal this prompts for a transcription provider + API key. To set them non-interactively:
+
+```bash
+parachute install scribe --scribe-provider groq --scribe-key gsk_…
+```
+
+Once installed, scribe is reachable **through the hub** at `<hub-origin>/scribe/...` — e.g. its admin/config UI is `<hub-origin>/scribe/admin` and the Whisper endpoint is `<hub-origin>/scribe/v1/audio/transcriptions`. The hub proxies `/scribe/*` from `:1939` to scribe on loopback `:1943`. For a local hub, `<hub-origin>` is `http://127.0.0.1:1939`.
+
+### Clone and run from source
 
 Requires [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`).
 
@@ -20,7 +42,7 @@ Transcribe a file:
 bun src/cli.ts recording.wav
 ```
 
-Start the HTTP server:
+Start the HTTP server (port `1943`):
 
 ```bash
 bun src/cli.ts serve
@@ -157,6 +179,25 @@ Optional LLM pass that fixes transcription artifacts — filler words, punctuati
 | `groq` | Cloud | Fast. Requires `GROQ_API_KEY`. |
 | `custom` | Cloud | Any OpenAI-compatible endpoint. See env vars below. |
 | `none` | - | Skip cleanup. Default. |
+
+## Provider setup — where does my API key go?
+
+Local providers (`parakeet-mlx`, `onnx-asr`, `whisper`, `ollama`, `claude-code`) need no key. Cloud providers need one. Scribe reads a provider's key from three places, in precedence order — **config file > env var > built-in default**:
+
+1. **The admin SPA (hub installs).** Open `<hub-origin>/scribe/admin`, pick your provider, paste the key. Scribe writes it into `~/.parachute/scribe/config.json` under `transcribeProviders.<name>` / `cleanupProviders.<name>`. Updating a **key** for the provider you're already on takes effect on the next request. **Selecting or switching a provider needs a restart** (`parachute restart scribe`) — the admin SPA flags this too. This is the path for hub-managed installs.
+2. **An env var** — the right path for source / CLI runs. Put keys in `~/.parachute/scribe/.env` (or your shell environment):
+
+   | Provider | Key env var | Used for |
+   |---|---|---|
+   | `groq` | `GROQ_API_KEY` | transcription + cleanup |
+   | `openai` | `OPENAI_API_KEY` | transcription + cleanup |
+   | `anthropic` | `ANTHROPIC_API_KEY` | cleanup |
+   | `gemini` | `GEMINI_API_KEY` | cleanup |
+   | `custom` | `CLEANUP_API_KEY` | cleanup |
+
+   `claude-code` is the no-key Anthropic path: it shells out to the [Claude Code CLI](https://claude.com/claude-code) and uses your existing subscription auth — run `claude setup-token` on the host instead of setting a key.
+
+The full env-var surface (model overrides, endpoints) is in [Environment variables](#environment-variables) below; `.env.example` is the copy-paste starting point.
 
 ## Environment variables
 
