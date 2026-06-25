@@ -159,8 +159,8 @@ schema declares them under `x-scopes` for forward compat.
 
 | Provider | Type | Notes |
 |----------|------|-------|
-| `parakeet-mlx` | Local | Mac only. NVIDIA Parakeet via MLX. Fastest local option. Default. |
-| `onnx-asr` | Local | Cross-platform. Sherpa-ONNX ASR. |
+| `parakeet-mlx` | Local | macOS / Apple Silicon only (MLX). Fastest local option. Default on Mac. |
+| `onnx-asr` | Local | Cross-platform (the local backend for **Linux**, e.g. a DigitalOcean droplet). Parakeet via ONNX Runtime. See [Local transcription backends](#local-transcription-backends--install--sizing) for install + RAM. |
 | `whisper` | Local | Any platform. Requires `whisper-ctranslate2` (`pip install whisper-ctranslate2`). |
 | `groq` | Cloud | Fast, cheap (~$0.06/hr). Requires `GROQ_API_KEY`. |
 | `openai` | Cloud | Reference Whisper API. Requires `OPENAI_API_KEY`. |
@@ -179,6 +179,88 @@ Optional LLM pass that fixes transcription artifacts — filler words, punctuati
 | `groq` | Cloud | Fast. Requires `GROQ_API_KEY`. |
 | `custom` | Cloud | Any OpenAI-compatible endpoint. See env vars below. |
 | `none` | - | Skip cleanup. Default. |
+
+## Local transcription backends — install & sizing
+
+The local backends (`parakeet-mlx`, `onnx-asr`, `whisper`) run an ASR model on
+your own CPU/GPU — no API key, no per-minute cost, audio never leaves the box.
+The tradeoff is that they need to be installed, and they need real RAM and CPU.
+
+Pick the backend that matches your platform:
+
+- **macOS / Apple Silicon →** `parakeet-mlx` (the default; uses Apple's MLX).
+- **Linux (incl. a DigitalOcean / Hetzner droplet) →** `onnx-asr` (Parakeet via
+  ONNX Runtime). `parakeet-mlx` is macOS-only and won't run here.
+- **Either platform →** `whisper` (`whisper-ctranslate2`), if you prefer Whisper.
+
+### macOS (Apple Silicon)
+
+```bash
+brew install ffmpeg              # decode non-WAV audio (mp3/m4a/…)
+uv tool install parakeet-mlx    # or: pip install parakeet-mlx
+# Make sure the tool is on PATH, then point scribe at it:
+#   TRANSCRIBE_PROVIDER=parakeet-mlx   (the default)
+```
+
+For `onnx-asr` on Mac, follow the Linux `pip install onnx-asr[cpu,hub]` step
+below — it's cross-platform.
+
+### Linux (Debian / Ubuntu — the DigitalOcean case)
+
+```bash
+# 1. System prerequisites: Python + pip + ffmpeg.
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv ffmpeg
+
+# 2. Install the onnx-asr CLI. A venv keeps it off the system Python:
+python3 -m venv ~/.venvs/scribe-asr
+source ~/.venvs/scribe-asr/bin/activate
+pip install "onnx-asr[cpu,hub]"
+# (uv works too: `uv tool install "onnx-asr[cpu,hub]"`)
+
+# 3. Make `onnx-asr` reachable on scribe's PATH, then select the backend:
+#   TRANSCRIBE_PROVIDER=onnx-asr
+# NOTE: a venv only exports `onnx-asr` while activated — for scribe-as-a-daemon,
+# add ~/.venvs/scribe-asr/bin to scribe's service PATH, or use `uv tool install`
+# above (it puts the binary on PATH directly, no activation needed).
+```
+
+`onnx-asr[cpu,hub]` pulls in CPU ONNX Runtime plus the model-download helpers.
+The model (default `nemo-parakeet-tdt-0.6b-v3`) is fetched from Hugging Face on
+first use. `ffmpeg` is required to decode anything that isn't already WAV.
+
+> The admin SPA's backend check (and `GET /scribe/admin/backend-availability`)
+> tells you exactly which binary or system dep is missing — if a backend shows as
+> unavailable, that report names the precise `pip install` / `apt install` fix.
+
+### Sizing caveat — local ASR needs real RAM
+
+The ONNX Parakeet model is **not** tiny once loaded into memory. Be honest with
+yourself about the box:
+
+- **A 1 GB droplet (DigitalOcean's smallest) will struggle.** Loading the model
+  plus ONNX Runtime can exceed available RAM — expect the process to be killed
+  by the OOM killer, or to swap so hard that a few minutes of audio takes a very
+  long time. Don't plan on running local ASR there.
+- **~2 GB RAM is a realistic floor**, and **4 GB+** is comfortable for routine
+  use. More CPU cores = faster transcription; there's no GPU requirement, but a
+  bigger box helps a lot.
+
+If you're on a small droplet and don't want to size up, **use a cloud
+transcription provider instead** — `groq` (fast, ~$0.06/hr) or `openai`. These
+do the heavy lifting on the provider's hardware, so scribe stays light:
+
+```bash
+# Switch scribe to a hosted transcription backend (no local model needed):
+TRANSCRIBE_PROVIDER=groq
+GROQ_API_KEY=gsk_…
+# or: TRANSCRIBE_PROVIDER=openai  +  OPENAI_API_KEY=sk-…
+```
+
+See [Provider setup](#provider-setup--where-does-my-api-key-go) for where that
+key goes (admin SPA, env var, or config file). The other option is to keep local
+ASR but run scribe on a larger box / a dedicated transcription host that vault
+and the hub reach over the network.
 
 ## Provider setup — where does my API key go?
 
