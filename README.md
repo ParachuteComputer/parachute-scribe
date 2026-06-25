@@ -233,6 +233,25 @@ first use. `ffmpeg` is required to decode anything that isn't already WAV.
 > tells you exactly which binary or system dep is missing — if a backend shows as
 > unavailable, that report names the precise `pip install` / `apt install` fix.
 
+**Don't want to run the steps by hand?** Scribe can install the local backend
+for this platform for you — the runnable companion to the diagnose-only report:
+
+```bash
+parachute-scribe doctor              # diagnose every backend (no changes)
+parachute-scribe doctor --fix        # diagnose, then INSTALL the local backend
+parachute-scribe install-backend     # install only (onnx-asr on Linux, parakeet-mlx on macOS)
+parachute-scribe install-backend onnx-asr --skip-model   # explicit backend, skip the model warm-pull
+```
+
+`--fix` / `install-backend` is **idempotent + non-fatal** (safe to re-run; a
+failed step reports and exits non-zero but never leaves a half-install). On
+Linux it apt-installs `python3`/`python3-venv`/`ffmpeg` (using `sudo` when not
+root) and installs the CLI via `uv tool install` or a venv + `pip`; on macOS it
+installs via `uv`/`pip` and instructs `brew install ffmpeg` if ffmpeg is
+missing. It then warm-pulls the default model (`nemo-parakeet-tdt-0.6b-v3`) and
+re-runs the detector to verify. It **refuses** on a box with less than ~2 GB
+available RAM and steers you to a cloud provider (see the sizing caveat below).
+
 ### Sizing caveat — local ASR needs real RAM
 
 The ONNX Parakeet model is **not** tiny once loaded into memory. Be honest with

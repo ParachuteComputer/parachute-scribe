@@ -209,8 +209,12 @@ const defaultClaudeProbe: ClaudeProbeFn = async () => {
 const CLAUDE_UNAUTH_SIGNATURE = /not logged in|invalid api key|unauthorized|authentication/i;
 
 /**
- * Install command per local transcription CLI. Sourced from README +
- * .env.example.
+ * Install spec per local transcription CLI. The single source of truth for
+ * BOTH the diagnose-only `fix` prose (rendered in the admin SPA) and the
+ * runnable install routine (`src/install-backend.ts`). The `pipPackage` /
+ * `pipExtras` fields are the canonical install target — the prose `fix` is
+ * *derived* from them (see `derivePipFix`) so the two can never drift, and the
+ * installer reuses the same fields rather than re-hardcoding pip args.
  *
  * `needsFfmpeg` marks backends that shell to `ffmpeg` internally to decode
  * non-WAV audio. ffmpeg is a *silent* prerequisite: when it's missing these
@@ -221,28 +225,76 @@ const CLAUDE_UNAUTH_SIGNATURE = /not logged in|invalid api key|unauthorized|auth
  * hardcoded `name === "onnx-asr"` gate), which is why parakeet-mlx/whisper
  * operators hit the silent ffmpeg failure with no warning.
  */
-const TRANSCRIBE_INSTALL: Record<
-  string,
-  { bin: string; fix: string; needsFfmpeg?: boolean }
-> = {
+export type TranscribeInstallSpec = {
+  /** Binary on PATH that proves the backend is installed (the `Bun.which` target). */
+  bin: string;
+  /** Bare pip/PyPI package name (no extras). */
+  pipPackage: string;
+  /** Optional pip "extras" suffix, e.g. `[cpu,hub]` → installs `onnx-asr[cpu,hub]`. */
+  pipExtras?: string;
+  /** Platform restriction, when the backend only runs on one OS. */
+  platform?: "darwin" | "linux";
+  /** Short human label used in the derived prose fix. */
+  label: string;
+  /** The pre-derived diagnose-only fix prose (computed once at module load). */
+  fix: string;
+  needsFfmpeg?: boolean;
+};
+
+/** The pip install target string, e.g. `onnx-asr[cpu,hub]` or `parakeet-mlx`. */
+export function pipTarget(spec: { pipPackage: string; pipExtras?: string }): string {
+  return spec.pipExtras ? `${spec.pipPackage}${spec.pipExtras}` : spec.pipPackage;
+}
+
+/**
+ * Derive the diagnose-only `fix` prose from the structured install spec, so
+ * the prose and the runnable installer share one source for the pip target.
+ */
+function derivePipFix(
+  spec: Omit<TranscribeInstallSpec, "fix">,
+): string {
+  const target = pipTarget(spec);
+  const platformNote =
+    spec.platform === "darwin"
+      ? " (macOS / Apple Silicon only)"
+      : spec.platform === "linux"
+        ? " (Linux)"
+        : " (cross-platform)";
+  // uv is the recommended installer for the macOS tool; pip is the universal fallback.
+  if (spec.platform === "darwin") {
+    return `Install the ${spec.label} CLI${platformNote}: \`uv tool install ${target}\` (or \`pip install ${target}\`), then ensure it's on PATH.`;
+  }
+  return `Install the ${spec.label} CLI: \`pip install ${target}\`${platformNote}, then ensure it's on PATH.`;
+}
+
+function buildSpec(s: Omit<TranscribeInstallSpec, "fix">): TranscribeInstallSpec {
+  return { ...s, fix: derivePipFix(s) };
+}
+
+export const TRANSCRIBE_INSTALL: Record<string, TranscribeInstallSpec> = {
   // parakeet-mlx: macOS / Apple-Silicon only (MLX). Published as a uv/pip tool.
-  "parakeet-mlx": {
+  "parakeet-mlx": buildSpec({
     bin: "parakeet-mlx",
-    fix: "Install the parakeet-mlx CLI (macOS / Apple Silicon only): `uv tool install parakeet-mlx` (or `pip install parakeet-mlx`), then ensure it's on PATH.",
+    pipPackage: "parakeet-mlx",
+    platform: "darwin",
+    label: "parakeet-mlx",
     needsFfmpeg: true,
-  },
-  "onnx-asr": {
+  }),
+  "onnx-asr": buildSpec({
     bin: "onnx-asr",
-    fix: "Install the onnx-asr CLI: `pip install onnx-asr[cpu,hub]` (cross-platform), then ensure it's on PATH.",
+    pipPackage: "onnx-asr",
+    pipExtras: "[cpu,hub]",
+    label: "onnx-asr",
     needsFfmpeg: true,
-  },
+  }),
   // The `whisper` backend shells to the `whisper-ctranslate2` binary, NOT a
   // bare `whisper` — the install command + the PATH check both target it.
-  whisper: {
+  whisper: buildSpec({
     bin: "whisper-ctranslate2",
-    fix: "Install whisper-ctranslate2: `pip install whisper-ctranslate2`, then ensure it's on PATH.",
+    pipPackage: "whisper-ctranslate2",
+    label: "whisper-ctranslate2",
     needsFfmpeg: true,
-  },
+  }),
 };
 
 /** API-backend env-var names — mirrors provider-config.ts so the message names the real var. */
