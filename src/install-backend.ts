@@ -49,10 +49,17 @@ export function pipTargetFor(provider: string): string | null {
 /** Default model warm-pulled for the onnx-asr / parakeet backends. */
 export const DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v3";
 
-/** Minimum available RAM (in MiB) below which a local backend is refused. */
+/**
+ * Minimum available RAM (in MiB) below which a local backend is refused.
+ * Exported for hub / the DO install script to read the same floor (don't
+ * rename without updating those consumers).
+ */
 export const MIN_RAM_MIB = 2048;
 
-/** The cloud-provider steer shown when RAM is too low (mirrors the README). */
+/**
+ * The cloud-provider steer shown when RAM is too low (mirrors the README).
+ * Exported for hub / the DO install script to reuse verbatim.
+ */
 export const CLOUD_STEER =
   "This box has too little RAM for a local ASR model (it would be OOM-killed). " +
   "Use a cloud transcription provider instead — `groq` (fast, ~$0.06/hr) or `openai`: " +
@@ -531,9 +538,11 @@ async function warmPullModel(
     deps.which("onnx-asr") ?? `${venvDir(deps)}/bin/onnx-asr`;
 
   deps.log(`Warm-pulling model ${model} (one-time download) …`);
-  // `onnx-asr <model> --help` is enough to trigger the model fetch+cache
-  // without needing an audio file; if that interface changes the worst case is
-  // a no-op skip (the model still lazy-loads on first transcription).
+  // FRAGILE: assumes `onnx-asr <model> --help` triggers the model fetch+cache
+  // without needing an audio file. If that CLI interface changes the worst case
+  // is a no-op skip (the model still lazy-loads on first transcription) — but a
+  // regression here would silently lose the warm-pull, so verify against the
+  // real onnx-asr CLI when bumping it.
   const r = await deps.run([bin, model, "--help"]);
   if (r.exitCode === 0) {
     return {
