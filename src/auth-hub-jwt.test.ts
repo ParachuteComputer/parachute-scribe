@@ -17,7 +17,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { enforceAuth, validateToken } from "./auth.ts";
-import { resetJwksCache, resetRevocationCache } from "./hub-jwt.ts";
+import { parseHubOrigins, resetJwksCache, resetRevocationCache } from "./hub-jwt.ts";
 
 interface Keypair {
   privateKey: CryptoKey;
@@ -239,5 +239,100 @@ describe("hub JWT integration — revocation enforcement", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe("parseHubOrigins — comma-separated hub-origin set parser", () => {
+  test("undefined → []", () => {
+    expect(parseHubOrigins(undefined)).toEqual([]);
+  });
+
+  test("empty string → []", () => {
+    expect(parseHubOrigins("")).toEqual([]);
+  });
+
+  test("whitespace / commas only → []", () => {
+    expect(parseHubOrigins("  , ,  ")).toEqual([]);
+  });
+
+  test("trims, strips trailing slash, drops empties, dedupes", () => {
+    // "a,b/, ,a" → [a, b] — b/ loses its trailing slash, the empty middle
+    // entry is dropped, and the duplicate a collapses to one.
+    expect(parseHubOrigins("https://a.example,https://b.example/, ,https://a.example")).toEqual([
+      "https://a.example",
+      "https://b.example",
+    ]);
+  });
+});
+
+describe("hub JWT integration — multi-origin iss-set (PARACHUTE_HUB_ORIGINS)", () => {
+  // The fixture origin is the canonical `PARACHUTE_HUB_ORIGIN` (so JWKS fetch
+  // works); a SECOND origin is added only to `PARACHUTE_HUB_ORIGINS`. A token
+  // minted with `iss` = the second origin must validate (signature still proves
+  // THIS hub minted it — the JWKS came from the canonical origin); an unlisted
+  // origin must be rejected; and with the SET env unset, only the canonical
+  // origin validates.
+  const SECOND_ORIGIN = "https://scribe.box.sslip.io";
+  const UNLISTED_ORIGIN = "https://attacker.example";
+
+  test("token whose iss is a second origin in PARACHUTE_HUB_ORIGINS → accepted", async () => {
+    process.env.PARACHUTE_HUB_ORIGINS = `${SECOND_ORIGIN},${fixture.origin}`;
+    resetJwksCache();
+    const token = await signJwt(kp, {
+      iss: SECOND_ORIGIN,
+      aud: "scribe",
+      scope: "scribe:transcribe",
+    });
+    try {
+      const result = await validateToken(token);
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.mode).toBe("hub-jwt");
+        expect(result.scopes).toEqual(["scribe:transcribe"]);
+      }
+    } finally {
+      delete process.env.PARACHUTE_HUB_ORIGINS;
+    }
+  });
+
+  test("token whose iss is NOT in the set → rejected (issuer pin holds)", async () => {
+    process.env.PARACHUTE_HUB_ORIGINS = SECOND_ORIGIN;
+    resetJwksCache();
+    const token = await signJwt(kp, {
+      iss: UNLISTED_ORIGIN,
+      aud: "scribe",
+      scope: "scribe:transcribe",
+    });
+    try {
+      const result = await validateToken(token);
+      expect(result.valid).toBe(false);
+    } finally {
+      delete process.env.PARACHUTE_HUB_ORIGINS;
+    }
+  });
+
+  test("env UNSET → only the canonical hubOrigin validates (back-compat collapse)", async () => {
+    // PARACHUTE_HUB_ORIGINS is unset (beforeEach never sets it; we assert it).
+    expect(process.env.PARACHUTE_HUB_ORIGINS).toBeUndefined();
+    resetJwksCache();
+
+    // Canonical origin (PARACHUTE_HUB_ORIGIN === fixture.origin) → accepted.
+    const canonical = await signJwt(kp, {
+      iss: fixture.origin,
+      aud: "scribe",
+      scope: "scribe:transcribe",
+    });
+    const okResult = await validateToken(canonical);
+    expect(okResult.valid).toBe(true);
+
+    // A second-origin token that WOULD have passed with the set configured is
+    // now rejected — proving the unset path is byte-identical to single-origin.
+    const second = await signJwt(kp, {
+      iss: SECOND_ORIGIN,
+      aud: "scribe",
+      scope: "scribe:transcribe",
+    });
+    const rejectedResult = await validateToken(second);
+    expect(rejectedResult.valid).toBe(false);
   });
 });
