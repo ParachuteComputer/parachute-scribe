@@ -220,6 +220,9 @@ pip install "onnx-asr[cpu,hub]"
 
 # 3. Make `onnx-asr` reachable on scribe's PATH, then select the backend:
 #   TRANSCRIBE_PROVIDER=onnx-asr
+# NOTE: a venv only exports `onnx-asr` while activated — for scribe-as-a-daemon,
+# add ~/.venvs/scribe-asr/bin to scribe's service PATH, or use `uv tool install`
+# above (it puts the binary on PATH directly, no activation needed).
 ```
 
 `onnx-asr[cpu,hub]` pulls in CPU ONNX Runtime plus the model-download helpers.
